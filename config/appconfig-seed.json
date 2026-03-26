@@ -1,0 +1,24 @@
+{
+  "receptionist:company_name":              "Contoso Ltd",
+  "receptionist:voice_name":                "en-AU-NatashaNeural",
+  "receptionist:speech_language":           "en-AU",
+  "receptionist:timezone":                  "Australia/Sydney",
+  "receptionist:match_threshold":           "65",
+
+  "receptionist:greeting_message":          "Welcome to Contoso. Please say the full name of the person you would like to speak to.",
+  "receptionist:noanswer_message":          "I'm sorry, I couldn't find that person in our directory. Let me transfer you to our reception team.",
+  "receptionist:afterhours_message":        "Thank you for calling Contoso. Our office is currently closed. Our business hours are Monday to Friday, 8:30am to 5:30pm. Please call back during business hours.",
+
+  "receptionist:business_hours_mon":        "08:30-17:30",
+  "receptionist:business_hours_tue":        "08:30-17:30",
+  "receptionist:business_hours_wed":        "08:30-17:30",
+  "receptionist:business_hours_thu":        "08:30-17:30",
+  "receptionist:business_hours_fri":        "08:30-16:00",
+  "receptionist:business_hours_sat":        "",
+  "receptionist:business_hours_sun":        "",
+
+  "receptionist:staff_group_id":            "REPLACE-WITH-AD-GROUP-OBJECT-ID",
+  "receptionist:default_reception_aad_id":  "REPLACE-WITH-RECEPTION-USER-AAD-OBJECT-ID",
+  "receptionist:acs_callback_url":          "https://REPLACE-FUNCTION-APP-NAME.azurewebsites.net/api/acs_callback",
+  "receptionist:tenant_id":                 "REPLACE-WITH-AZURE-AD-TENANT-ID"
+}

@@ -1,0 +1,132 @@
+{
+  "alert_rules": [
+    {
+      "name": "alert-transfer-failures",
+      "description": "More than 3 call transfer failures detected in a 5 minute window",
+      "severity": 2,
+      "enabled": true,
+      "evaluation_frequency": "PT5M",
+      "window_size": "PT5M",
+      "type": "scheduled_query",
+      "query": "traces | where timestamp > ago(5m) | where message contains 'Transfer FAILED' | count",
+      "threshold_operator": "GreaterThan",
+      "threshold_value": 3,
+      "notify": ["email", "teams"]
+    },
+    {
+      "name": "alert-speech-recognition-errors",
+      "description": "Speech recognition failure rate exceeds 20% over 15 minutes",
+      "severity": 2,
+      "enabled": true,
+      "evaluation_frequency": "PT5M",
+      "window_size": "PT15M",
+      "type": "scheduled_query",
+      "query": "let total = traces | where timestamp > ago(15m) | where message contains 'Speech recognised' or message contains 'RecognizeFailed' | count; let failed = traces | where timestamp > ago(15m) | where message contains 'RecognizeFailed' | count; print rate = todouble(failed) / todouble(total) * 100",
+      "threshold_operator": "GreaterThan",
+      "threshold_value": 20,
+      "notify": ["email", "teams"]
+    },
+    {
+      "name": "alert-function-exceptions",
+      "description": "Any unhandled exception in the Function App",
+      "severity": 1,
+      "enabled": true,
+      "evaluation_frequency": "PT1M",
+      "window_size": "PT5M",
+      "type": "scheduled_query",
+      "query": "exceptions | where timestamp > ago(5m) | where cloud_RoleName contains 'receptionist' | count",
+      "threshold_operator": "GreaterThan",
+      "threshold_value": 0,
+      "notify": ["email", "teams"]
+    },
+    {
+      "name": "alert-keyvault-access-failures",
+      "description": "Key Vault returning errors — secrets may be inaccessible",
+      "severity": 1,
+      "enabled": true,
+      "evaluation_frequency": "PT5M",
+      "window_size": "PT5M",
+      "type": "scheduled_query",
+      "query": "traces | where timestamp > ago(5m) | where message contains 'Key Vault' and (message contains '403' or message contains 'Forbidden' or message contains 'Unauthorized') | count",
+      "threshold_operator": "GreaterThan",
+      "threshold_value": 0,
+      "notify": ["email", "teams"]
+    },
+    {
+      "name": "alert-function-unavailable",
+      "description": "No incoming calls processed in 1 hour during expected business hours — Function App may be down",
+      "severity": 1,
+      "enabled": true,
+      "evaluation_frequency": "PT15M",
+      "window_size": "PT1H",
+      "type": "metric",
+      "metric_name": "FunctionExecutionCount",
+      "threshold_operator": "LessThan",
+      "threshold_value": 1,
+      "notify": ["email", "teams"],
+      "note": "Only meaningful during business hours — consider disabling on weekends"
+    },
+    {
+      "name": "alert-graph-api-failures",
+      "description": "Graph API returning errors — staff directory lookup failing",
+      "severity": 2,
+      "enabled": true,
+      "evaluation_frequency": "PT5M",
+      "window_size": "PT10M",
+      "type": "scheduled_query",
+      "query": "traces | where timestamp > ago(10m) | where message contains 'Graph API error' | count",
+      "threshold_operator": "GreaterThan",
+      "threshold_value": 2,
+      "notify": ["email", "teams"]
+    },
+    {
+      "name": "alert-high-fallback-rate",
+      "description": "More than 10 calls routed to default reception in 30 minutes — possible speech recognition or matching issue",
+      "severity": 3,
+      "enabled": true,
+      "evaluation_frequency": "PT10M",
+      "window_size": "PT30M",
+      "type": "scheduled_query",
+      "query": "traces | where timestamp > ago(30m) | where message contains 'routing to reception' | count",
+      "threshold_operator": "GreaterThan",
+      "threshold_value": 10,
+      "notify": ["email", "teams"]
+    },
+    {
+      "name": "alert-client-secret-expiry",
+      "description": "App Registration client secret expires within 30 days",
+      "severity": 2,
+      "enabled": true,
+      "evaluation_frequency": "P1D",
+      "window_size": "P1D",
+      "type": "manual_check",
+      "notify": ["email"],
+      "note": "This is checked by Rotate-ClientSecret.ps1 and Set-AlertRules.ps1. Run monthly as part of lifecycle review."
+    }
+  ],
+
+  "severity_reference": {
+    "0": "Critical — immediate action required",
+    "1": "Error — action required same day",
+    "2": "Warning — investigate within business hours",
+    "3": "Informational — review at next opportunity"
+  },
+
+  "notification_targets": {
+    "email": "REPLACE-WITH-IT-ALERT-EMAIL",
+    "teams": "REPLACE-WITH-TEAMS-WEBHOOK-URL"
+  },
+
+  "action_groups": {
+    "email_action_group":  "ag-receptionist-email",
+    "teams_action_group":  "ag-receptionist-teams"
+  },
+
+  "notes": [
+    "This file is read by Set-AlertRules.ps1 to create Azure Monitor alert rules.",
+    "Update notification_targets before running Set-AlertRules.ps1.",
+    "scheduled_query alerts require App Insights to be linked to the Function App.",
+    "The client_secret_expiry alert is handled via PowerShell — not a native Azure Monitor rule.",
+    "Adjust threshold values to suit your call volume after the first 2 weeks of operation."
+  ]
+}
