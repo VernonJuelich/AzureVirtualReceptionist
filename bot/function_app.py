@@ -16,18 +16,18 @@ from call_handler import CallHandler
 from config_loader import ConfigLoader
 
 logger = logging.getLogger(__name__)
-app    = func.FunctionApp(http_auth_level=func.AuthLevel.FUNCTION)
+app = func.FunctionApp(http_auth_level=func.AuthLevel.FUNCTION)
 
 # Module-level singletons — reused across warm instances
 # Initialised lazily on first request
-_config:  ConfigLoader  = None
-_handler: CallHandler   = None
+_config: ConfigLoader = None
+_handler: CallHandler = None
 
 
 def _get_handler() -> CallHandler:
     global _config, _handler
     if _handler is None:
-        _config  = ConfigLoader()
+        _config = ConfigLoader()
         _handler = CallHandler(_config)
     return _handler
 
@@ -43,9 +43,13 @@ async def incoming_call(req: func.HttpRequest) -> func.HttpResponse:
     try:
         events = req.get_json()
 
-        # Log event type only — never log full payload (may contain call metadata)
+        # Log event type only — never log full payload (may contain call
+        # metadata)
         event_types = [e.get("type", "unknown") for e in events]
-        logger.info("incoming_call: received %d event(s): %s", len(events), event_types)
+        logger.info(
+            "incoming_call: received %d event(s): %s",
+            len(events),
+            event_types)
 
         for event in events:
             event_type = event.get("type", "")
@@ -87,7 +91,10 @@ async def acs_callback(req: func.HttpRequest) -> func.HttpResponse:
         events = req.get_json()
 
         event_types = [e.get("type", "unknown") for e in events]
-        logger.info("acs_callback: received %d event(s): %s", len(events), event_types)
+        logger.info(
+            "acs_callback: received %d event(s): %s",
+            len(events),
+            event_types)
 
         handler = _get_handler()
         for event in events:
@@ -112,7 +119,7 @@ async def health(req: func.HttpRequest) -> func.HttpResponse:
         cfg = _get_handler().config
         return func.HttpResponse(
             json.dumps({
-                "status":  "ok",
+                "status": "ok",
                 "company": cfg.get("receptionist:company_name"),
             }),
             mimetype="application/json",

@@ -20,18 +20,18 @@ from msgraph import GraphServiceClient
 
 logger = logging.getLogger(__name__)
 
-_cache_members:    list   = []
-_cache_timestamp:  float  = 0.0
-_cache_available:  bool   = True   # False when last fetch failed
+_cache_members: list = []
+_cache_timestamp: float = 0.0
+_cache_available: bool = True   # False when last fetch failed
 CACHE_TTL = 300  # 5 minutes
 
 
 @dataclass
 class StaffMember:
-    aad_id:                 str
-    display_name:           str
-    given_name:             str = ""
-    surname:                str = ""
+    aad_id: str
+    display_name: str
+    given_name: str = ""
+    surname: str = ""
     pronunciation_override: str = ""  # from extensionAttribute1
 
     @property
@@ -61,10 +61,10 @@ class DirectoryUnavailableError(Exception):
 
 
 async def get_staff_members(
-    tenant_id:     str,
-    client_id:     str,
+    tenant_id: str,
+    client_id: str,
     client_secret: str,
-    group_id:      str,
+    group_id: str,
 ) -> list:
     """
     Returns list of StaffMember from the Azure AD Security Group.
@@ -81,10 +81,14 @@ async def get_staff_members(
 
     now = time.time()
     if _cache_members and (now - _cache_timestamp) < CACHE_TTL:
-        logger.info("Returning cached staff directory (%d members)", len(_cache_members))
+        logger.info(
+            "Returning cached staff directory (%d members)",
+            len(_cache_members))
         return _cache_members
 
-    logger.info("Fetching group members from Graph API (group=%s)...", group_id)
+    logger.info(
+        "Fetching group members from Graph API (group=%s)...",
+        group_id)
 
     try:
         credential = ClientSecretCredential(
@@ -92,9 +96,9 @@ async def get_staff_members(
             client_id=client_id,
             client_secret=client_secret,
         )
-        graph   = GraphServiceClient(credential)
+        graph = GraphServiceClient(credential)
         members = []
-        page    = await graph.groups.by_group_id(group_id).members.get(
+        page = await graph.groups.by_group_id(group_id).members.get(
             request_configuration={
                 "query_parameters": {
                     "$select": "id,displayName,givenName,surname,onPremisesExtensionAttributes,@odata.type",
@@ -106,23 +110,28 @@ async def get_staff_members(
         while page:
             if page.value:
                 for obj in page.value:
-                    # Filter: only include user objects (groups can contain devices, groups, etc.)
+                    # Filter: only include user objects (groups can contain
+                    # devices, groups, etc.)
                     odata_type = getattr(obj, "odata_type", "") or ""
                     if odata_type and "#microsoft.graph.user" not in odata_type.lower():
-                        logger.debug("Skipping non-user member (type=%s)", odata_type)
+                        logger.debug(
+                            "Skipping non-user member (type=%s)", odata_type)
                         continue
 
-                    aad_id       = getattr(obj, "id", "") or ""
+                    aad_id = getattr(obj, "id", "") or ""
                     display_name = getattr(obj, "display_name", "") or ""
 
                     if not aad_id or not display_name:
-                        logger.debug("Skipping member with missing id or displayName")
+                        logger.debug(
+                            "Skipping member with missing id or displayName")
                         continue
 
                     pronunciation = ""
-                    ext = getattr(obj, "on_premises_extension_attributes", None)
+                    ext = getattr(
+                        obj, "on_premises_extension_attributes", None)
                     if ext:
-                        pronunciation = getattr(ext, "extension_attribute1", "") or ""
+                        pronunciation = getattr(
+                            ext, "extension_attribute1", "") or ""
 
                     members.append(StaffMember(
                         aad_id=aad_id,
@@ -145,7 +154,7 @@ async def get_staff_members(
             len(members),
             sum(1 for m in members if m.pronunciation_override)
         )
-        _cache_members   = members
+        _cache_members = members
         _cache_timestamp = now
         _cache_available = True
         return members
@@ -154,7 +163,9 @@ async def get_staff_members(
         logger.error("Graph API error loading staff directory: %s", exc)
         _cache_available = False
         if _cache_members:
-            logger.warning("Graph fetch failed — returning stale cache (%d members)", len(_cache_members))
+            logger.warning(
+                "Graph fetch failed — returning stale cache (%d members)",
+                len(_cache_members))
             return _cache_members
         raise DirectoryUnavailableError(
             f"Staff directory unavailable and no cache exists: {exc}"

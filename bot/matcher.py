@@ -25,7 +25,7 @@ import logging
 import re
 import unicodedata
 import xml.sax.saxutils as saxutils
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Optional, TYPE_CHECKING
 
 from rapidfuzz import process, fuzz
@@ -40,7 +40,8 @@ try:
     PHONETIC_AVAILABLE = True
 except ImportError:
     PHONETIC_AVAILABLE = False
-    logger.warning("jellyfish not installed — phonetic matching disabled. Add it to requirements.txt.")
+    logger.warning(
+        "jellyfish not installed — phonetic matching disabled. Add it to requirements.txt.")
 
 # Minimum score margin by which best match must beat second-best.
 # Prevents false positives where multiple names score similarly.
@@ -49,10 +50,10 @@ CONFIDENCE_MARGIN = 10
 
 @dataclass
 class MatchResult:
-    staff:      Optional["StaffMember"] = None
-    score:      float = 0.0
-    strategy:   str   = "none"
-    matched_on: str   = ""
+    staff: Optional["StaffMember"] = None
+    score: float = 0.0
+    strategy: str = "none"
+    matched_on: str = ""
 
     @property
     def found(self) -> bool:
@@ -86,7 +87,10 @@ class NameMatcher:
         # Strategy 1: Exact
         result = self._exact(spoken_clean, staff)
         if result.found:
-            logger.info("Exact match: '%s' → '%s'", spoken, result.staff.display_name)
+            logger.info(
+                "Exact match: '%s' → '%s'",
+                spoken,
+                result.staff.display_name)
             return result
 
         # Strategy 2: Phonetic (Soundex)
@@ -108,14 +112,21 @@ class NameMatcher:
             )
             return result
 
-        logger.info("No match found for '%s' above threshold %d", spoken, self.threshold)
+        logger.info(
+            "No match found for '%s' above threshold %d",
+            spoken,
+            self.threshold)
         return MatchResult()
 
     def _exact(self, spoken: str, staff: list) -> MatchResult:
         for member in staff:
             for token in member.searchable_tokens:
                 if _normalise(token) == spoken:
-                    return MatchResult(staff=member, score=100.0, strategy="exact", matched_on=token)
+                    return MatchResult(
+                        staff=member,
+                        score=100.0,
+                        strategy="exact",
+                        matched_on=token)
         return MatchResult()
 
     def _phonetic(self, spoken: str, staff: list) -> MatchResult:
@@ -146,12 +157,18 @@ class NameMatcher:
 
         # If multiple members share the same Soundex, apply confidence margin
         if len(set(m[0].aad_id for m in matches)) > 1:
-            logger.info("Phonetic ambiguity — multiple members match Soundex of '%s'", spoken)
+            logger.info(
+                "Phonetic ambiguity — multiple members match Soundex of '%s'",
+                spoken)
             return MatchResult()
 
         best_member, best_token, score = matches[0]
         if score >= self.threshold:
-            return MatchResult(staff=best_member, score=score, strategy="phonetic", matched_on=best_token)
+            return MatchResult(
+                staff=best_member,
+                score=score,
+                strategy="phonetic",
+                matched_on=best_token)
         return MatchResult()
 
     def _fuzzy(self, spoken: str, staff: list) -> MatchResult:
@@ -190,8 +207,10 @@ class NameMatcher:
             if (best_score - second_score) < CONFIDENCE_MARGIN:
                 logger.info(
                     "Fuzzy ambiguity: best=%.1f second=%.1f margin=%.1f (threshold=%d) — rejecting",
-                    best_score, second_score, best_score - second_score, CONFIDENCE_MARGIN
-                )
+                    best_score,
+                    second_score,
+                    best_score - second_score,
+                    CONFIDENCE_MARGIN)
                 return MatchResult()
 
         _, best_member = candidates[best_idx]
@@ -217,7 +236,7 @@ def build_ssml_transfer_message(staff: "StaffMember", voice_name: str) -> str:
     All dynamic values are XML-escaped.
     """
     voice_safe = _xml_escape(voice_name)
-    name_ssml  = _build_name_element(staff)
+    name_ssml = _build_name_element(staff)
     return (
         f'<speak version="1.0" xmlns="http://www.w3.org/2001/10/synthesis" xml:lang="en-AU">'
         f'<voice name="{voice_safe}">'
@@ -229,7 +248,7 @@ def build_ssml_transfer_message(staff: "StaffMember", voice_name: str) -> str:
 def build_ssml_message(text: str, voice_name: str) -> str:
     """Builds SSML for any plain message. Escapes text content."""
     voice_safe = _xml_escape(voice_name)
-    text_safe  = _xml_escape(text)
+    text_safe = _xml_escape(text)
     return (
         f'<speak version="1.0" xmlns="http://www.w3.org/2001/10/synthesis" xml:lang="en-AU">'
         f'<voice name="{voice_safe}">{text_safe}</voice>'
@@ -245,7 +264,7 @@ def _build_name_element(staff: "StaffMember") -> str:
       - Plain text  → <phoneme alphabet="x-microsoft-ups" ph="...">
     All values are XML-escaped.
     """
-    display  = _xml_escape(staff.display_name)
+    display = _xml_escape(staff.display_name)
     override = (staff.pronunciation_override or "").strip()
 
     if not override:
