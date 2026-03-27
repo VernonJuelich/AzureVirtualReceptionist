@@ -1,76 +1,55 @@
 """
 matcher.py
 ==========
-Multi-strategy name matching engine.
+Multi-strategy name matching engine with SSML pronunciation support.
 
-Strategy (in order of precedence):
-  1. Exact match (case-insensitive)
-  2. Phonetic match using Soundex + Double Metaphone
-  3. Fuzzy token-sort match (rapidfuzz) with configurable threshold
+Strategies (in order):
+  1. Exact match (case-insensitive, accent-normalised)
+  2. Phonetic match using Soundex (jellyfish)
+  3. Fuzzy match (rapidfuzz token_sort_ratio)
 
-For TTS pronunciation, each staff member may have an override stored in
-Azure AD extensionAttribute1 (e.g. "HAN-son" for Hanson).
-The bot speaks this override rather than the raw displayName when present.
+For short/ambiguous names, a confidence margin check ensures the best
+match is meaningfully better than the second-best before accepting.
 
-This avoids issues like Azure TTS rendering:
-  "Hanson"   → "handsome"
-  "Nguyen"   → "new-yen" (instead of "win")
-  "Siobhan"  → "see-oh-ban" (instead of "shi-vawn")
+TTS pronunciation overrides are stored in extensionAttribute1 in Azure AD.
+SSML output is XML-escaped to prevent injection from config values.
+
+Fixes from code review:
+  - Corrected phonetic algorithm label (uses Soundex, not Double Metaphone)
+  - Added confidence margin check to reduce false positives on short names
+  - Added XML escaping for all SSML dynamic values
+  - Removed misleading "Double Metaphone" references
 """
 
 import logging
 import re
 import unicodedata
+import xml.sax.saxutils as saxutils
 from dataclasses import dataclass, field
-from typing import Optional
+from typing import Optional, TYPE_CHECKING
 
 from rapidfuzz import process, fuzz
 
+if TYPE_CHECKING:
+    from graph_client import StaffMember
+
 logger = logging.getLogger(__name__)
 
-# ── Install jellyfish for phonetic algorithms ─────────────────
 try:
     import jellyfish
     PHONETIC_AVAILABLE = True
 except ImportError:
     PHONETIC_AVAILABLE = False
-    logger.warning("jellyfish not installed — phonetic matching disabled. Add jellyfish to requirements.txt")
+    logger.warning("jellyfish not installed — phonetic matching disabled. Add it to requirements.txt.")
 
-
-@dataclass
-class StaffMember:
-    aad_id:       str
-    display_name: str
-    given_name:   str  = ""
-    surname:      str  = ""
-    # extensionAttribute1 in Azure AD = phonetic pronunciation override
-    # e.g. "HAN-son" or "win" (for Nguyen)
-    pronunciation_override: str = ""
-
-    @property
-    def tts_name(self) -> str:
-        """The name to speak aloud in TTS. Uses override if set."""
-        return self.pronunciation_override or self.display_name
-
-    @property
-    def searchable_tokens(self) -> list[str]:
-        """All name forms we try to match against."""
-        tokens = [self.display_name]
-        if self.given_name:
-            tokens.append(self.given_name)
-        if self.surname:
-            tokens.append(self.surname)
-        # First name only, last name only
-        parts = self.display_name.split()
-        if len(parts) >= 2:
-            tokens.append(parts[0])   # first name
-            tokens.append(parts[-1])  # last name
-        return list(set(tokens))
+# Minimum score margin by which best match must beat second-best.
+# Prevents false positives where multiple names score similarly.
+CONFIDENCE_MARGIN = 10
 
 
 @dataclass
 class MatchResult:
-    staff:      Optional[StaffMember] = None
+    staff:      Optional["StaffMember"] = None
     score:      float = 0.0
     strategy:   str   = "none"
     matched_on: str   = ""
@@ -82,43 +61,46 @@ class MatchResult:
 
 class NameMatcher:
     """
-    Matches a spoken name string against a list of StaffMember objects.
+    Matches a spoken name against a list of StaffMember objects.
 
     Usage:
         matcher = NameMatcher(threshold=65)
         result  = matcher.match("Hanson", staff_list)
         if result.found:
-            print(result.staff.tts_name)   # speaks pronunciation override
+            ssml = build_ssml_transfer_message(result.staff, voice_name)
     """
 
     def __init__(self, threshold: int = 65):
         self.threshold = threshold
 
-    def match(self, spoken: str, staff: list[StaffMember]) -> MatchResult:
+    def match(self, spoken: str, staff: list) -> MatchResult:
         if not spoken or not staff:
             return MatchResult()
 
         spoken_clean = _normalise(spoken)
-        logger.info("Matching '%s' (normalised: '%s') against %d staff", spoken, spoken_clean, len(staff))
+        logger.info(
+            "Matching '%s' (normalised='%s') against %d staff members",
+            spoken, spoken_clean, len(staff)
+        )
 
-        # ── Strategy 1: Exact match ───────────────────────────
-        result = self._exact_match(spoken_clean, staff)
+        # Strategy 1: Exact
+        result = self._exact(spoken_clean, staff)
         if result.found:
             logger.info("Exact match: '%s' → '%s'", spoken, result.staff.display_name)
             return result
 
-        # ── Strategy 2: Phonetic match ────────────────────────
+        # Strategy 2: Phonetic (Soundex)
         if PHONETIC_AVAILABLE:
-            result = self._phonetic_match(spoken_clean, staff)
+            result = self._phonetic(spoken_clean, staff)
             if result.found:
                 logger.info(
-                    "Phonetic match: '%s' → '%s' (score=%.1f, strategy=%s)",
-                    spoken, result.staff.display_name, result.score, result.strategy
+                    "Phonetic match: '%s' → '%s' (score=%.1f)",
+                    spoken, result.staff.display_name, result.score
                 )
                 return result
 
-        # ── Strategy 3: Fuzzy match ───────────────────────────
-        result = self._fuzzy_match(spoken_clean, staff)
+        # Strategy 3: Fuzzy
+        result = self._fuzzy(spoken_clean, staff)
         if result.found:
             logger.info(
                 "Fuzzy match: '%s' → '%s' (score=%.1f)",
@@ -129,85 +111,56 @@ class NameMatcher:
         logger.info("No match found for '%s' above threshold %d", spoken, self.threshold)
         return MatchResult()
 
-    # ── Strategy 1 — Exact ───────────────────────────────────
-
-    def _exact_match(self, spoken: str, staff: list[StaffMember]) -> MatchResult:
+    def _exact(self, spoken: str, staff: list) -> MatchResult:
         for member in staff:
             for token in member.searchable_tokens:
                 if _normalise(token) == spoken:
                     return MatchResult(staff=member, score=100.0, strategy="exact", matched_on=token)
         return MatchResult()
 
-    # ── Strategy 2 — Phonetic ────────────────────────────────
-
-    def _phonetic_match(self, spoken: str, staff: list[StaffMember]) -> MatchResult:
+    def _phonetic(self, spoken: str, staff: list) -> MatchResult:
         """
-        Uses Double Metaphone for better international name support.
-        Double Metaphone handles:
-          - Nguyen  → ('N', 'NK') matches 'win' → ('N', 'N')  [partial]
-          - Siobhan → ('XPN', 'XBN')
-          - Hanson  → ('HNSN', '') — 'handsome' → ('HNTSM', '') — different, so
-                      phonetic alone won't fix this case (use pronunciation_override)
-
-        Soundex is used as a secondary check for simpler cases.
+        Soundex matching — good for simple phonetic variants
+        (e.g. "Smith" / "Smyth", "Johnston" / "Johnson").
+        Note: uses jellyfish.soundex(), NOT Double Metaphone.
         """
-        spoken_meta   = jellyfish.metaphone(spoken)
-        spoken_soundex = jellyfish.soundex(spoken)
+        try:
+            spoken_sdx = jellyfish.soundex(spoken)
+        except Exception:
+            return MatchResult()
 
-        best_score  = 0.0
-        best_member = None
-        best_token  = ""
-
+        matches = []
         for member in staff:
             for token in member.searchable_tokens:
                 t = _normalise(token)
                 if not t:
                     continue
-
-                # Double Metaphone
                 try:
-                    token_meta = jellyfish.metaphone(t)
-                    if spoken_meta and token_meta and (
-                        spoken_meta == token_meta or
-                        spoken_meta.startswith(token_meta[:3]) or
-                        token_meta.startswith(spoken_meta[:3])
-                    ):
-                        score = _metaphone_similarity(spoken_meta, token_meta)
-                        if score > best_score:
-                            best_score  = score
-                            best_member = member
-                            best_token  = token
+                    if jellyfish.soundex(t) == spoken_sdx:
+                        matches.append((member, token, 78.0))
                 except Exception:
-                    pass
+                    continue
 
-                # Soundex fallback
-                try:
-                    token_sdx = jellyfish.soundex(t)
-                    if spoken_soundex == token_sdx and best_score < 80:
-                        if 75 > best_score:
-                            best_score  = 75.0
-                            best_member = member
-                            best_token  = token
-                except Exception:
-                    pass
+        if not matches:
+            return MatchResult()
 
-        if best_member and best_score >= self.threshold:
-            return MatchResult(
-                staff=best_member,
-                score=best_score,
-                strategy="phonetic",
-                matched_on=best_token,
-            )
+        # If multiple members share the same Soundex, apply confidence margin
+        if len(set(m[0].aad_id for m in matches)) > 1:
+            logger.info("Phonetic ambiguity — multiple members match Soundex of '%s'", spoken)
+            return MatchResult()
+
+        best_member, best_token, score = matches[0]
+        if score >= self.threshold:
+            return MatchResult(staff=best_member, score=score, strategy="phonetic", matched_on=best_token)
         return MatchResult()
 
-    # ── Strategy 3 — Fuzzy ───────────────────────────────────
-
-    def _fuzzy_match(self, spoken: str, staff: list[StaffMember]) -> MatchResult:
+    def _fuzzy(self, spoken: str, staff: list) -> MatchResult:
         """
-        rapidfuzz token_sort_ratio — handles word-order differences.
-        Builds a flat list of (token, member) pairs and finds the best match.
+        rapidfuzz token_sort_ratio — handles word-order variation.
+        Applies confidence margin: best score must exceed second-best
+        by CONFIDENCE_MARGIN to avoid false positives on short names.
         """
-        candidates: list[tuple[str, StaffMember]] = []
+        candidates: list = []
         for member in staff:
             for token in member.searchable_tokens:
                 candidates.append((_normalise(token), member))
@@ -215,112 +168,108 @@ class NameMatcher:
         if not candidates:
             return MatchResult()
 
-        names_only = [c[0] for c in candidates]
-        result = process.extractOne(
+        names = [c[0] for c in candidates]
+        results = process.extract(
             spoken,
-            names_only,
+            names,
             scorer=fuzz.token_sort_ratio,
+            limit=3,
         )
 
-        if not result:
+        if not results:
             return MatchResult()
 
-        _, score, idx = result
-        if score >= self.threshold:
-            _, matched_member = candidates[idx]
-            return MatchResult(
-                staff=matched_member,
-                score=float(score),
-                strategy="fuzzy",
-                matched_on=names_only[idx],
-            )
-        return MatchResult()
+        best_name, best_score, best_idx = results[0]
+
+        if best_score < self.threshold:
+            return MatchResult()
+
+        # Confidence margin check — reject if second-best is too close
+        if len(results) > 1:
+            second_score = results[1][1]
+            if (best_score - second_score) < CONFIDENCE_MARGIN:
+                logger.info(
+                    "Fuzzy ambiguity: best=%.1f second=%.1f margin=%.1f (threshold=%d) — rejecting",
+                    best_score, second_score, best_score - second_score, CONFIDENCE_MARGIN
+                )
+                return MatchResult()
+
+        _, best_member = candidates[best_idx]
+        return MatchResult(
+            staff=best_member,
+            score=float(best_score),
+            strategy="fuzzy",
+            matched_on=best_name,
+        )
 
 
-# ── SSML builder for TTS with pronunciation override ─────────
+# ── SSML builders with XML escaping ──────────────────────────
 
-def build_ssml_transfer_message(staff: StaffMember, voice_name: str) -> str:
+def _xml_escape(text: str) -> str:
+    """Escape XML special characters to prevent SSML injection."""
+    return saxutils.escape(str(text or ""))
+
+
+def build_ssml_transfer_message(staff: "StaffMember", voice_name: str) -> str:
     """
-    Builds an SSML string for the "Connecting you to [name]" message.
-    If the staff member has a pronunciation_override set, it wraps
-    the name in <phoneme> tags to guide TTS pronunciation.
-
-    Example:
-      display_name = "Hanson"
-      pronunciation_override = "HAN-son"
-      → <say-as interpret-as="characters">HAN-son</say-as>
-
-    For full phoneme IPA support (e.g. Siobhan):
-      pronunciation_override = "ʃɪˈvɔːn"  (IPA)
-      → <phoneme alphabet="ipa" ph="ʃɪˈvɔːn">Siobhan</phoneme>
+    Builds SSML for "Connecting you to [name]".
+    Uses pronunciation override (extensionAttribute1) if set.
+    All dynamic values are XML-escaped.
     """
-    name_ssml = _build_name_ssml(staff)
+    voice_safe = _xml_escape(voice_name)
+    name_ssml  = _build_name_element(staff)
     return (
         f'<speak version="1.0" xmlns="http://www.w3.org/2001/10/synthesis" xml:lang="en-AU">'
-        f'<voice name="{voice_name}">'
+        f'<voice name="{voice_safe}">'
         f'Please hold. Connecting you to {name_ssml}.'
         f'</voice></speak>'
     )
 
 
-def build_ssml_greeting(company_name: str, greeting_text: str, voice_name: str) -> str:
+def build_ssml_message(text: str, voice_name: str) -> str:
+    """Builds SSML for any plain message. Escapes text content."""
+    voice_safe = _xml_escape(voice_name)
+    text_safe  = _xml_escape(text)
     return (
         f'<speak version="1.0" xmlns="http://www.w3.org/2001/10/synthesis" xml:lang="en-AU">'
-        f'<voice name="{voice_name}">'
-        f'{greeting_text}'
-        f'</voice></speak>'
+        f'<voice name="{voice_safe}">{text_safe}</voice>'
+        f'</speak>'
     )
 
 
-def build_ssml_not_found(spoken_name: str, voice_name: str, fallback_message: str) -> str:
-    return (
-        f'<speak version="1.0" xmlns="http://www.w3.org/2001/10/synthesis" xml:lang="en-AU">'
-        f'<voice name="{voice_name}">'
-        f'{fallback_message}'
-        f'</voice></speak>'
-    )
-
-
-def _build_name_ssml(staff: StaffMember) -> str:
+def _build_name_element(staff: "StaffMember") -> str:
+    """
+    Returns the SSML fragment for speaking a name.
+    If pronunciation_override is set:
+      - IPA string  → <phoneme alphabet="ipa" ph="...">
+      - Plain text  → <phoneme alphabet="x-microsoft-ups" ph="...">
+    All values are XML-escaped.
+    """
+    display  = _xml_escape(staff.display_name)
     override = (staff.pronunciation_override or "").strip()
-    display  = staff.display_name
 
     if not override:
         return display
 
-    # If override looks like IPA (contains Unicode phonetic chars)
-    if _is_ipa(override):
-        return f'<phoneme alphabet="ipa" ph="{override}">{display}</phoneme>'
+    ph_safe = _xml_escape(override)
 
-    # Otherwise treat as a spoken-form hint using say-as
-    return f'<phoneme alphabet="x-microsoft-ups" ph="{override}">{display}</phoneme>'
+    if _is_ipa(override):
+        return f'<phoneme alphabet="ipa" ph="{ph_safe}">{display}</phoneme>'
+    return f'<phoneme alphabet="x-microsoft-ups" ph="{ph_safe}">{display}</phoneme>'
 
 
 def _is_ipa(text: str) -> bool:
-    """Rough check — IPA strings contain Unicode outside basic Latin."""
+    """Rough check: IPA strings contain Unicode outside basic Latin."""
     return any(ord(c) > 127 for c in text)
 
 
-# ── Utility functions ─────────────────────────────────────────
+# ── Utilities ─────────────────────────────────────────────────
 
 def _normalise(text: str) -> str:
-    """Lowercase, strip accents, remove punctuation for matching."""
+    """Lowercase, strip combining accents, remove punctuation."""
     if not text:
         return ""
-    # Decompose Unicode accents (é → e + combining accent → e)
     nfkd = unicodedata.normalize("NFKD", text)
     ascii_str = "".join(c for c in nfkd if not unicodedata.combining(c))
     lower = ascii_str.lower().strip()
-    # Remove punctuation except hyphens (hyphenated names)
     return re.sub(r"[^\w\s-]", "", lower).strip()
-
-
-def _metaphone_similarity(a: str, b: str) -> float:
-    """Simple overlap score between two metaphone strings."""
-    if not a or not b:
-        return 0.0
-    shorter, longer = (a, b) if len(a) <= len(b) else (b, a)
-    if len(longer) == 0:
-        return 0.0
-    overlap = sum(1 for c in shorter if c in longer)
-    return (overlap / len(longer)) * 100
