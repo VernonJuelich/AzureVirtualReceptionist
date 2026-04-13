@@ -76,10 +76,15 @@ jobs:
           scm-do-build-during-deployment: true
           enable-oryx-build:           true
 
+      # [Issue 8] Consumption plan cold starts can take 60-90 seconds when
+      # loading heavy dependencies (msgraph-sdk, azure-identity, etc.).
+      # The previous 30s wait was consistently too short. We now wait 60s
+      # and then retry the health check up to 5 times with 15s gaps, giving
+      # the function up to ~2.5 minutes total to become healthy before failing.
       - name: Wait for Function App cold start
-        run: sleep 30
+        run: sleep 60
 
-      - name: Health check
+      - name: Health check (with retry)
         run: |
           FUNCTION_KEY=$(az functionapp keys list \
             --name            "${{ secrets.FUNCTION_APP_NAME }}" \
@@ -90,14 +95,25 @@ jobs:
           HEALTH_URL="https://${{ secrets.FUNCTION_APP_NAME }}.azurewebsites.net/api/health?code=${FUNCTION_KEY}"
           echo "Checking: $HEALTH_URL"
 
-          HTTP_STATUS=$(curl -s -o /dev/null -w "%{http_code}" "$HEALTH_URL")
+          MAX_ATTEMPTS=5
+          ATTEMPT=1
+          while [ $ATTEMPT -le $MAX_ATTEMPTS ]; do
+            echo "Health check attempt $ATTEMPT of $MAX_ATTEMPTS..."
+            HTTP_STATUS=$(curl -s -o /dev/null -w "%{http_code}" --max-time 20 "$HEALTH_URL")
+            if [ "$HTTP_STATUS" = "200" ]; then
+              echo "Health check passed (HTTP 200)"
+              exit 0
+            fi
+            echo "Health check returned HTTP $HTTP_STATUS"
+            if [ $ATTEMPT -lt $MAX_ATTEMPTS ]; then
+              echo "Waiting 15s before retry..."
+              sleep 15
+            fi
+            ATTEMPT=$((ATTEMPT + 1))
+          done
 
-          if [ "$HTTP_STATUS" = "200" ]; then
-            echo "Health check passed (HTTP 200)"
-          else
-            echo "Health check failed (HTTP $HTTP_STATUS)"
-            exit 1
-          fi
+          echo "Health check failed after $MAX_ATTEMPTS attempts"
+          exit 1
 
       # Teams notification via Power Automate HTTP trigger
       # (Office 365 Connectors are deprecated — use a Power Automate flow instead)
