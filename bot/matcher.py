@@ -14,7 +14,10 @@ match is meaningfully better than the second-best before accepting.
 TTS pronunciation overrides are stored in extensionAttribute1 in Azure AD.
 SSML output is XML-escaped to prevent injection from config values.
 
-Fixes from code review:
+Fixes applied:
+  - [Issue 6] Added comment clarifying the best_idx coupling between the
+               rapidfuzz results list and the candidates list, making the
+               implicit dependency explicit for future maintainers.
   - Corrected phonetic algorithm label (uses Soundex, not Double Metaphone)
   - Added confidence margin check to reduce false positives on short names
   - Added XML escaping for all SSML dynamic values
@@ -87,10 +90,7 @@ class NameMatcher:
         # Strategy 1: Exact
         result = self._exact(spoken_clean, staff)
         if result.found:
-            logger.info(
-                "Exact match: '%s' → '%s'",
-                spoken,
-                result.staff.display_name)
+            logger.info("Exact match: '%s' → '%s'", spoken, result.staff.display_name)
             return result
 
         # Strategy 2: Phonetic (Soundex)
@@ -113,9 +113,7 @@ class NameMatcher:
             return result
 
         logger.info(
-            "No match found for '%s' above threshold %d",
-            spoken,
-            self.threshold)
+            "No match found for '%s' above threshold %d", spoken, self.threshold)
         return MatchResult()
 
     def _exact(self, spoken: str, staff: list) -> MatchResult:
@@ -158,8 +156,7 @@ class NameMatcher:
         # If multiple members share the same Soundex, apply confidence margin
         if len(set(m[0].aad_id for m in matches)) > 1:
             logger.info(
-                "Phonetic ambiguity — multiple members match Soundex of '%s'",
-                spoken)
+                "Phonetic ambiguity — multiple members match Soundex of '%s'", spoken)
             return MatchResult()
 
         best_member, best_token, score = matches[0]
@@ -176,6 +173,14 @@ class NameMatcher:
         rapidfuzz token_sort_ratio — handles word-order variation.
         Applies confidence margin: best score must exceed second-best
         by CONFIDENCE_MARGIN to avoid false positives on short names.
+
+        [Issue 6] NOTE — index coupling: `candidates` is built as a flat list
+        of (normalised_name, StaffMember) tuples, and `names` is derived from
+        it as [c[0] for c in candidates], preserving the same order and indices.
+        rapidfuzz.process.extract returns (match_string, score, index) where
+        `index` is the position in the `names` list passed to it — which is
+        identical to the position in `candidates`. This coupling is intentional
+        and correct, but must be maintained if either list construction changes.
         """
         candidates: list = []
         for member in staff:
@@ -185,6 +190,7 @@ class NameMatcher:
         if not candidates:
             return MatchResult()
 
+        # names[i] corresponds to candidates[i] — indices must stay in sync
         names = [c[0] for c in candidates]
         results = process.extract(
             spoken,
@@ -207,12 +213,10 @@ class NameMatcher:
             if (best_score - second_score) < CONFIDENCE_MARGIN:
                 logger.info(
                     "Fuzzy ambiguity: best=%.1f second=%.1f margin=%.1f (threshold=%d) — rejecting",
-                    best_score,
-                    second_score,
-                    best_score - second_score,
-                    CONFIDENCE_MARGIN)
+                    best_score, second_score, best_score - second_score, CONFIDENCE_MARGIN)
                 return MatchResult()
 
+        # best_idx is the index into `names`, which maps 1:1 to `candidates`
         _, best_member = candidates[best_idx]
         return MatchResult(
             staff=best_member,

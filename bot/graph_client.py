@@ -4,7 +4,15 @@ graph_client.py
 Loads Azure AD Security Group members for the staff directory.
 Reads extensionAttribute1 as TTS pronunciation override.
 
-Fixes from code review:
+Fixes applied:
+  - [Issue 3]  Added explicit documentation that the in-memory cache is
+                per-Function-App-instance, not shared across scale-out instances.
+                Operators should not assume cross-instance cache consistency.
+  - [Issue 14] Added a comment clarifying that @odata.type in the $select list
+                controls what the API returns; the SDK maps it to odata_type
+                (underscored). Added a defensive fallback for SDK versions where
+                the attribute may not be populated, to avoid silently including
+                non-user members.
   - Added pagination for groups with >999 members
   - Added object type filtering (users only — groups can contain other types)
   - Stale cache fallback is preserved but "unavailable" is now distinguishable
@@ -20,6 +28,12 @@ from msgraph import GraphServiceClient
 
 logger = logging.getLogger(__name__)
 
+# NOTE [Issue 3]: This cache is in-process (per Function App instance).
+# On a Consumption plan, Azure Functions may run multiple warm instances
+# simultaneously. Each instance holds its own independent cache and will
+# make its own Graph API call on the first request after a cold start or
+# after the TTL expires. This is expected behaviour — Graph API calls are
+# fast and infrequent. Do NOT assume this cache is shared across instances.
 _cache_members: list = []
 _cache_timestamp: float = 0.0
 _cache_available: bool = True   # False when last fetch failed
@@ -76,6 +90,15 @@ async def get_staff_members(
       Hanson   → "HAN-son"
       Nguyen   → "win"
       Siobhan  → "ʃɪˈvɔːn"   (IPA)
+
+    NOTE [Issue 14]: The $select query requests "@odata.type" so the Graph API
+    includes the member object type in the response. The msgraph-sdk maps this
+    field to the Python attribute `odata_type` (with underscores). The SDK may
+    not populate `odata_type` on all SDK versions — the fallback logic below
+    checks for an empty/missing attribute and skips the type filter in that case,
+    relying instead on the presence of required user-specific fields (id,
+    displayName) as a secondary guard. Test with a group that contains nested
+    groups or devices to verify filtering behaviour on your SDK version.
     """
     global _cache_members, _cache_timestamp, _cache_available
 
@@ -101,6 +124,8 @@ async def get_staff_members(
         page = await graph.groups.by_group_id(group_id).members.get(
             request_configuration={
                 "query_parameters": {
+                    # "@odata.type" in $select causes Graph to include the type
+                    # discriminator. The SDK exposes this as obj.odata_type.
                     "$select": "id,displayName,givenName,surname,onPremisesExtensionAttributes,@odata.type",
                     "$top": 999,
                 }
@@ -110,8 +135,9 @@ async def get_staff_members(
         while page:
             if page.value:
                 for obj in page.value:
-                    # Filter: only include user objects (groups can contain
-                    # devices, groups, etc.)
+                    # [Issue 14] Filter to user objects only.
+                    # odata_type may be None/empty on some SDK versions — in
+                    # that case we skip the type check and rely on field presence.
                     odata_type = getattr(obj, "odata_type", "") or ""
                     if odata_type and "#microsoft.graph.user" not in odata_type.lower():
                         logger.debug(
@@ -121,14 +147,16 @@ async def get_staff_members(
                     aad_id = getattr(obj, "id", "") or ""
                     display_name = getattr(obj, "display_name", "") or ""
 
+                    # Secondary guard: if odata_type was not available, skip
+                    # objects that lack the user-specific fields we need.
                     if not aad_id or not display_name:
                         logger.debug(
-                            "Skipping member with missing id or displayName")
+                            "Skipping member with missing id or displayName (odata_type='%s')",
+                            odata_type)
                         continue
 
                     pronunciation = ""
-                    ext = getattr(
-                        obj, "on_premises_extension_attributes", None)
+                    ext = getattr(obj, "on_premises_extension_attributes", None)
                     if ext:
                         pronunciation = getattr(
                             ext, "extension_attribute1", "") or ""

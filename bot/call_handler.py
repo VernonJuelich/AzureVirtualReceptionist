@@ -3,9 +3,14 @@ call_handler.py
 ===============
 Orchestrates the full call flow.
 
-Fixes from code review:
+Fixes applied:
+  - [Issue 1]  _pending_transfers moved from module-level global to Azure Table Storage
+                so state is shared correctly across all Function App scale-out instances.
+  - [Issue 2]  call_id now passed as a parameter to _on_speech_recognised rather than
+                being re-derived from data inside the method, eliminating the silent
+                empty-string risk if callConnectionId is absent from a callback payload.
   - Transfer now waits for PlayCompleted event before initiating (no race condition)
-  - After-hours and terminal fallback paths now hang up the call cleanly
+  - After-hours and terminal fallback paths hang up the call cleanly
   - Retry count parsed explicitly — no longer fragile string-shape dependent
   - AAD Object ID validated before attempting transfer
   - DirectoryUnavailableError handled distinctly from "no name match"
@@ -13,6 +18,7 @@ Fixes from code review:
 """
 
 import logging
+import os
 import re
 from datetime import datetime
 from datetime import time as dtime
@@ -28,6 +34,8 @@ from azure.communication.callautomation.models import (
     TransferCallToParticipantOptions,
     PlayOptions,
 )
+from azure.data.tables import TableServiceClient
+from azure.identity import DefaultAzureCredential
 
 from config_loader import ConfigLoader
 from graph_client import get_staff_members, DirectoryUnavailableError
@@ -41,9 +49,65 @@ _UUID_RE = re.compile(
     re.IGNORECASE
 )
 
+# Table Storage constants for cross-instance pending transfer state
+# The storage account connection string must be available as an app setting.
+_PENDING_TABLE_NAME = "pendingtransfers"
+
 
 def _is_valid_aad_id(value: str) -> bool:
     return bool(value and _UUID_RE.match(value.strip()))
+
+
+# ── Pending transfer helpers (Table Storage — shared across all instances) ──
+
+def _get_table_client():
+    """
+    Returns a TableClient for the pending-transfers table.
+    Uses the Function App storage account connection string, which is always
+    available as AzureWebJobsStorage (set automatically by the runtime).
+    Falls back to Managed Identity + AZURE_STORAGE_ACCOUNT_NAME if preferred.
+    """
+    conn_str = os.environ.get("AzureWebJobsStorage", "")
+    if conn_str:
+        svc = TableServiceClient.from_connection_string(conn_str)
+    else:
+        # Managed Identity path (set AZURE_STORAGE_ACCOUNT_NAME app setting)
+        account_name = os.environ["AZURE_STORAGE_ACCOUNT_NAME"]
+        svc = TableServiceClient(
+            endpoint=f"https://{account_name}.table.core.windows.net",
+            credential=DefaultAzureCredential(),
+        )
+    svc.create_table_if_not_exists(_PENDING_TABLE_NAME)
+    return svc.get_table_client(_PENDING_TABLE_NAME)
+
+
+def _store_pending_transfer(call_id: str, aad_id: str, display_name: str) -> None:
+    """Upsert a pending transfer record into Table Storage."""
+    try:
+        client = _get_table_client()
+        client.upsert_entity({
+            "PartitionKey": "pending",
+            "RowKey": call_id,
+            "aad_id": aad_id,
+            "display_name": display_name,
+        })
+    except Exception as exc:
+        logger.error("Failed to store pending transfer for call_id=%s: %s", call_id, exc)
+        raise
+
+
+def _pop_pending_transfer(call_id: str) -> dict | None:
+    """
+    Retrieve and delete a pending transfer record.
+    Returns None if not found (already consumed or expired).
+    """
+    try:
+        client = _get_table_client()
+        entity = client.get_entity(partition_key="pending", row_key=call_id)
+        client.delete_entity(partition_key="pending", row_key=call_id)
+        return {"aad_id": entity["aad_id"], "display_name": entity["display_name"]}
+    except Exception:
+        return None
 
 
 class CallHandler:
@@ -71,8 +135,7 @@ class CallHandler:
             tz = ZoneInfo(tz_name)
         except Exception:
             logger.warning(
-                "Invalid timezone '%s' — defaulting to UTC",
-                tz_name)
+                "Invalid timezone '%s' — defaulting to UTC", tz_name)
             tz = ZoneInfo("UTC")
 
         now = datetime.now(tz)
@@ -100,11 +163,8 @@ class CallHandler:
         voice = self.config.get("receptionist:voice_name")
         speech_lang = self.config.get("receptionist:speech_language", "en-AU")
 
-        # Log correlation ID only — not call content
         correlation_id = data.get("correlationId", "unknown")
-        logger.info(
-            "Handling incoming call (correlationId=%s)",
-            correlation_id)
+        logger.info("Handling incoming call (correlationId=%s)", correlation_id)
 
         client = self._acs()
         call_conn = client.answer_call(
@@ -113,16 +173,14 @@ class CallHandler:
         )
 
         if not self._is_open():
-            # Play after-hours message then hang up cleanly
             afterhours_msg = self.config.get("receptionist:afterhours_message")
             call_conn.play_media_to_all(
-                self._tts(afterhours_msg), play_options=PlayOptions(
-                    operation_context="afterhours_message"), )
+                self._tts(afterhours_msg),
+                play_options=PlayOptions(operation_context="afterhours_message"),
+            )
             # Hang up is triggered in handle_callback on PlayCompleted
             return
 
-        # Business hours — play greeting and start speech recognition (attempt
-        # 1)
         greeting = self.config.get("receptionist:greeting_message")
         greeting_ssml = build_ssml_message(greeting, voice)
 
@@ -150,7 +208,8 @@ class CallHandler:
         conn = client.get_call_connection(call_id)
 
         if event_type == "Microsoft.Communication.RecognizeCompleted":
-            await self._on_speech_recognised(conn, data, op_context)
+            # [Issue 2] Pass call_id explicitly rather than re-deriving it inside
+            await self._on_speech_recognised(conn, call_id, data, op_context)
 
         elif event_type == "Microsoft.Communication.RecognizeFailed":
             await self._on_speech_failed(conn, call_id, op_context)
@@ -177,7 +236,6 @@ class CallHandler:
         logger.info("PlayCompleted: op_context=%s", op_context)
 
         if op_context == "afterhours_message":
-            # After-hours message finished — hang up cleanly
             logger.info("After-hours message complete — hanging up")
             try:
                 conn.hang_up(is_for_everyone=True)
@@ -185,7 +243,6 @@ class CallHandler:
                 logger.warning("Hang up failed: %s", exc)
 
         elif op_context == "terminal_fallback":
-            # Final "unable to connect" message finished — hang up
             logger.info("Terminal fallback message complete — hanging up")
             try:
                 conn.hang_up(is_for_everyone=True)
@@ -193,9 +250,8 @@ class CallHandler:
                 logger.warning("Hang up failed: %s", exc)
 
         elif op_context == "pre_transfer":
-            # "Connecting you to [name]" finished — now initiate transfer
-            # Transfer AAD ID was stored in a pending transfer dict
-            pending = _pending_transfers.pop(call_id, None)
+            # [Issue 1] Retrieve transfer target from Table Storage (shared across instances)
+            pending = _pop_pending_transfer(call_id)
             if pending:
                 logger.info(
                     "PlayCompleted pre_transfer — initiating transfer to %s",
@@ -207,38 +263,31 @@ class CallHandler:
                     is_fallback=False)
             else:
                 logger.warning(
-                    "No pending transfer found for call_id=%s", call_id)
+                    "No pending transfer found in Table Storage for call_id=%s", call_id)
 
         elif op_context == "pre_fallback":
-            # "Couldn't find / unavailable" message finished — transfer to reception
-            logger.info(
-                "PlayCompleted pre_fallback — transferring to reception")
-            reception_id = self.config.get(
-                "receptionist:default_reception_aad_id")
-            self._do_transfer(
-                conn,
-                reception_id,
-                "Reception",
-                is_fallback=True)
+            logger.info("PlayCompleted pre_fallback — transferring to reception")
+            reception_id = self.config.get("receptionist:default_reception_aad_id")
+            self._do_transfer(conn, reception_id, "Reception", is_fallback=True)
 
     # ── Speech recognised ─────────────────────────────────────
 
-    async def _on_speech_recognised(self, conn, data: dict, op_context: str):
+    async def _on_speech_recognised(self, conn, call_id: str, data: dict, op_context: str):
+        """
+        [Issue 2] call_id is now received as a parameter, not re-derived from data,
+        so it is guaranteed to be consistent with the connection object in use.
+        """
         speech_result = data.get("speechResult", {})
         spoken = (speech_result.get("speech") or "").strip()
 
-        # Log that recognition occurred — not the content (may be a person's
-        # name/PII)
         logger.info(
             "Speech recognised (length=%d chars, op_context=%s)",
-            len(spoken),
-            op_context)
+            len(spoken), op_context)
 
         if not spoken:
-            await self._on_speech_failed(conn, data.get("callConnectionId", ""), op_context)
+            await self._on_speech_failed(conn, call_id, op_context)
             return
 
-        # Load staff directory
         try:
             tenant_id, client_id, client_secret = self.config.get_graph_credentials()
             group_id = self.config.get("receptionist:staff_group_id")
@@ -247,8 +296,7 @@ class CallHandler:
             logger.error("Staff directory unavailable — routing to reception")
             conn.play_media_to_all(
                 self._tts("I'm sorry, our directory is currently unavailable. Let me transfer you to reception."),
-                play_options=PlayOptions(
-                    operation_context="pre_fallback"),
+                play_options=PlayOptions(operation_context="pre_fallback"),
             )
             return
 
@@ -257,28 +305,20 @@ class CallHandler:
         result = matcher.match(spoken, staff_list)
         voice = self.config.get("receptionist:voice_name")
 
-        call_id = data.get("callConnectionId", "")
-
         if result.found:
-            # Validate AAD ID before attempting transfer
             if not _is_valid_aad_id(result.staff.aad_id):
                 logger.error(
                     "Invalid AAD Object ID for '%s': '%s'",
-                    result.staff.display_name,
-                    result.staff.aad_id)
+                    result.staff.display_name, result.staff.aad_id)
                 conn.play_media_to_all(
                     self._tts("I'm sorry, I'm unable to connect that call right now. Let me transfer you to reception."),
-                    play_options=PlayOptions(
-                        operation_context="pre_fallback"),
+                    play_options=PlayOptions(operation_context="pre_fallback"),
                 )
                 return
 
-            # Store transfer target — actual transfer triggered after
-            # PlayCompleted
-            _pending_transfers[call_id] = {
-                "aad_id": result.staff.aad_id,
-                "display_name": result.staff.display_name,
-            }
+            # [Issue 1] Store transfer target in Table Storage (durable, cross-instance)
+            _store_pending_transfer(call_id, result.staff.aad_id, result.staff.display_name)
+
             ssml = build_ssml_transfer_message(result.staff, voice)
             conn.play_media_to_all(
                 self._ssml(ssml),
@@ -307,14 +347,12 @@ class CallHandler:
         try:
             attempt_num = int(op_context.split(":")[-1])
         except (ValueError, IndexError):
-            attempt_num = 2  # Unknown context — go straight to fallback
+            attempt_num = 2
 
         speech_lang = self.config.get("receptionist:speech_language", "en-AU")
 
         if attempt_num < 2:
-            logger.info(
-                "Speech not recognised (attempt %d) — prompting retry",
-                attempt_num)
+            logger.info("Speech not recognised (attempt %d) — prompting retry", attempt_num)
             conn.start_recognizing_media(
                 input_type="speech",
                 target_participant=None,
@@ -327,47 +365,34 @@ class CallHandler:
                 operation_context="attempt:2",
             )
         else:
-            logger.info(
-                "Speech not recognised after 2 attempts — routing to reception")
+            logger.info("Speech not recognised after 2 attempts — routing to reception")
             conn.play_media_to_all(
                 self._tts("I'm unable to understand. Let me connect you to our reception team."),
-                play_options=PlayOptions(
-                    operation_context="pre_fallback"),
+                play_options=PlayOptions(operation_context="pre_fallback"),
             )
 
     # ── Transfer failed ───────────────────────────────────────
 
     async def _on_transfer_failed(self, conn, data: dict, op_context: str):
         reason = data.get("resultInformation", {}).get("message", "unknown")
-        logger.error(
-            "Transfer failed (op_context=%s, reason=%s)",
-            op_context,
-            reason)
+        logger.error("Transfer failed (op_context=%s, reason=%s)", op_context, reason)
 
         if op_context == "fallback_transfer":
-            # Reception transfer also failed — play terminal message and hang
-            # up
             conn.play_media_to_all(
                 self._tts(
                     "I'm sorry, we are unable to connect your call at this time. "
-                    "Please try again shortly."), play_options=PlayOptions(
-                    operation_context="terminal_fallback"), )
+                    "Please try again shortly."),
+                play_options=PlayOptions(operation_context="terminal_fallback"),
+            )
         else:
-            # Primary transfer failed — try reception
             conn.play_media_to_all(
                 self._tts("That extension is currently unavailable. Transferring you to reception."),
-                play_options=PlayOptions(
-                    operation_context="pre_fallback"),
+                play_options=PlayOptions(operation_context="pre_fallback"),
             )
 
     # ── Transfer helper ───────────────────────────────────────
 
-    def _do_transfer(
-            self,
-            conn,
-            aad_object_id: str,
-            display_name: str,
-            is_fallback: bool = False):
+    def _do_transfer(self, conn, aad_object_id: str, display_name: str, is_fallback: bool = False):
         if not _is_valid_aad_id(aad_object_id):
             logger.error(
                 "Transfer aborted — invalid AAD Object ID for '%s': '%s'",
@@ -375,8 +400,7 @@ class CallHandler:
             )
             conn.play_media_to_all(
                 self._tts("I'm sorry, I'm unable to complete that transfer."),
-                play_options=PlayOptions(
-                    operation_context="terminal_fallback"),
+                play_options=PlayOptions(operation_context="terminal_fallback"),
             )
             return
 
@@ -387,18 +411,7 @@ class CallHandler:
         )
         try:
             conn.transfer_call_to_participant(options)
-            logger.info(
-                "Transfer initiated → '%s' (%s)",
-                display_name,
-                aad_object_id)
+            logger.info("Transfer initiated → '%s' (%s)", display_name, aad_object_id)
         except Exception as exc:
-            logger.error(
-                "Transfer initiation exception for '%s': %s",
-                display_name,
-                exc)
+            logger.error("Transfer initiation exception for '%s': %s", display_name, exc)
             raise
-
-
-# Module-level dict to track pending transfers between PlayCompleted events
-# key: call_connection_id, value: {"aad_id": ..., "display_name": ...}
-_pending_transfers: dict = {}

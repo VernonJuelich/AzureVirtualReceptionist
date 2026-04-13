@@ -43,13 +43,11 @@ async def incoming_call(req: func.HttpRequest) -> func.HttpResponse:
     try:
         events = req.get_json()
 
-        # Log event type only — never log full payload (may contain call
-        # metadata)
+        # Log event type only — never log full payload (may contain call metadata)
         event_types = [e.get("type", "unknown") for e in events]
         logger.info(
             "incoming_call: received %d event(s): %s",
-            len(events),
-            event_types)
+            len(events), event_types)
 
         for event in events:
             event_type = event.get("type", "")
@@ -93,8 +91,7 @@ async def acs_callback(req: func.HttpRequest) -> func.HttpResponse:
         event_types = [e.get("type", "unknown") for e in events]
         logger.info(
             "acs_callback: received %d event(s): %s",
-            len(events),
-            event_types)
+            len(events), event_types)
 
         handler = _get_handler()
         for event in events:
@@ -109,11 +106,18 @@ async def acs_callback(req: func.HttpRequest) -> func.HttpResponse:
 
 # ── Route 3: Health check ─────────────────────────────────────
 
+# [Issue 12] IMPORTANT: This route MUST remain at AuthLevel.FUNCTION (inherited
+# from the app-level setting above). Do NOT change it to AuthLevel.ANONYMOUS,
+# even for monitoring convenience. The response includes the company name from
+# App Configuration which would be exposed publicly without authentication.
+# Use Azure Monitor / Application Insights availability tests with a stored
+# function key for unauthenticated uptime monitoring instead.
 @app.route(route="health", methods=["GET"])
 async def health(req: func.HttpRequest) -> func.HttpResponse:
     """
     Returns minimal status confirmation.
     Does NOT expose config values — use Azure Portal / App Config for that.
+    Requires function key (?code=...). See note above re: auth level.
     """
     try:
         cfg = _get_handler().config

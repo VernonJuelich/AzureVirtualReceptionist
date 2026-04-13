@@ -10,6 +10,13 @@ Two environment variables must be set in Function App > Configuration:
 
 Everything else comes from App Configuration or Key Vault at runtime.
 No credentials are stored in code or config files.
+
+Fixes applied:
+  - [Issue 4] _cache and _cache_time moved from class attributes to instance
+               attributes in __init__, preventing shared mutable state across
+               multiple ConfigLoader instances.
+  - [Issue 7] Business hours split now uses maxsplit=1 as defensive practice
+               to prevent unexpected splits on malformed values.
 """
 
 import os
@@ -52,13 +59,21 @@ class ConfigLoader:
     """
     Loads and caches config from Azure App Configuration.
     Cache TTL: 5 minutes — changes are live within 5 minutes, no redeploy needed.
+
+    NOTE: Cache is per Function App instance (in-memory). On a Consumption plan
+    with multiple warm instances each instance holds its own cache. All instances
+    will refresh within 5 minutes of an App Configuration change.
     """
 
-    _cache: dict = {}
-    _cache_time: float = 0.0
     CACHE_TTL = 300  # seconds
 
     def __init__(self):
+        # [Issue 4] Instance-level attributes — NOT class-level.
+        # Class-level dicts are shared by reference across all instances,
+        # causing cache contamination if more than one ConfigLoader is created.
+        self._cache: dict = {}
+        self._cache_time: float = 0.0
+
         endpoint = os.environ.get("AZURE_APPCONFIG_ENDPOINT", "").strip()
         kv_url = os.environ.get("AZURE_KEYVAULT_URL", "").strip()
 
@@ -122,8 +137,7 @@ class ConfigLoader:
         except ValueError:
             logger.warning(
                 "Config key '%s' is not a valid integer — using default %d",
-                key,
-                default)
+                key, default)
             return default
 
     def get_business_hours(self) -> dict:
@@ -132,13 +146,13 @@ class ConfigLoader:
         Validates format — invalid entries default to closed with a warning.
         """
         day_map = {
-            "monday": "receptionist:business_hours_mon",
-            "tuesday": "receptionist:business_hours_tue",
+            "monday":    "receptionist:business_hours_mon",
+            "tuesday":   "receptionist:business_hours_tue",
             "wednesday": "receptionist:business_hours_wed",
-            "thursday": "receptionist:business_hours_thu",
-            "friday": "receptionist:business_hours_fri",
-            "saturday": "receptionist:business_hours_sat",
-            "sunday": "receptionist:business_hours_sun",
+            "thursday":  "receptionist:business_hours_thu",
+            "friday":    "receptionist:business_hours_fri",
+            "saturday":  "receptionist:business_hours_sat",
+            "sunday":    "receptionist:business_hours_sun",
         }
         result = {}
         for day, key in day_map.items():
@@ -149,16 +163,16 @@ class ConfigLoader:
             if not HOURS_PATTERN.match(val):
                 logger.warning(
                     "Invalid business hours format for %s: '%s' — expected HH:MM-HH:MM. Treating as closed.",
-                    day,
-                    val)
+                    day, val)
                 result[day] = None
                 continue
             try:
-                start_str, end_str = val.split("-")
-                # Validate the time values parse correctly
+                # [Issue 7] maxsplit=1 ensures a malformed value with extra
+                # dashes doesn't produce more than two parts.
+                start_str, end_str = val.split("-", maxsplit=1)
                 sh, sm = map(int, start_str.split(":"))
                 eh, em = map(int, end_str.split(":"))
-                dtime(sh, sm)  # raises ValueError if invalid
+                dtime(sh, sm)   # raises ValueError if out of range
                 dtime(eh, em)
                 result[day] = (start_str, end_str)
             except ValueError:
