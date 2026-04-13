@@ -1,9 +1,13 @@
-azure-functions>=1.18.0
-azure-communication-callautomation>=1.1.0
-azure-identity>=1.15.0
-azure-keyvault-secrets>=4.7.0
-azure-appconfiguration>=1.5.0
-msgraph-sdk>=1.0.0
-rapidfuzz>=3.6.0
-jellyfish>=1.0.0
-azure-monitor-opentelemetry>=1.2.0
+# Upper version bounds added (Issues 9, 15) to prevent silent breaking changes
+# from major SDK releases. azure-data-tables added for cross-instance pending
+# transfer state (Issue 1 fix in call_handler.py).
+azure-functions>=1.18.0,<2.0.0
+azure-communication-callautomation>=1.1.0,<2.0.0
+azure-identity>=1.15.0,<2.0.0
+azure-keyvault-secrets>=4.7.0,<5.0.0
+azure-appconfiguration>=1.5.0,<2.0.0
+azure-data-tables>=12.4.0,<13.0.0
+msgraph-sdk>=1.0.0,<2.0.0
+rapidfuzz>=3.6.0,<4.0.0
+jellyfish>=1.0.0,<2.0.0
+azure-monitor-opentelemetry>=1.2.0,<2.0.0
