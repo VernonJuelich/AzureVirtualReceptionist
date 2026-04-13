@@ -28,11 +28,7 @@ from azure.communication.callautomation import (
     CallAutomationClient,
     SsmlSource,
     TextSource,
-)
-from azure.communication.callautomation.models import (
     MicrosoftTeamsUserIdentifier,
-    TransferCallToParticipantOptions,
-    PlayOptions,
 )
 from azure.data.tables import TableServiceClient
 from azure.identity import DefaultAzureCredential
@@ -175,8 +171,7 @@ class CallHandler:
         if not self._is_open():
             afterhours_msg = self.config.get("receptionist:afterhours_message")
             call_conn.play_media_to_all(
-                self._tts(afterhours_msg),
-                play_options=PlayOptions(operation_context="afterhours_message"),
+                self._tts(afterhours_msg), operation_context="afterhours_message",
             )
             # Hang up is triggered in handle_callback on PlayCompleted
             return
@@ -295,8 +290,7 @@ class CallHandler:
         except DirectoryUnavailableError:
             logger.error("Staff directory unavailable — routing to reception")
             conn.play_media_to_all(
-                self._tts("I'm sorry, our directory is currently unavailable. Let me transfer you to reception."),
-                play_options=PlayOptions(operation_context="pre_fallback"),
+                self._tts("I'm sorry, our directory is currently unavailable. Let me transfer you to reception."), operation_context="pre_fallback",
             )
             return
 
@@ -311,8 +305,7 @@ class CallHandler:
                     "Invalid AAD Object ID for '%s': '%s'",
                     result.staff.display_name, result.staff.aad_id)
                 conn.play_media_to_all(
-                    self._tts("I'm sorry, I'm unable to connect that call right now. Let me transfer you to reception."),
-                    play_options=PlayOptions(operation_context="pre_fallback"),
+                    self._tts("I'm sorry, I'm unable to connect that call right now. Let me transfer you to reception."), operation_context="pre_fallback",
                 )
                 return
 
@@ -321,8 +314,7 @@ class CallHandler:
 
             ssml = build_ssml_transfer_message(result.staff, voice)
             conn.play_media_to_all(
-                self._ssml(ssml),
-                play_options=PlayOptions(operation_context="pre_transfer"),
+                self._ssml(ssml), operation_context="pre_transfer",
             )
             logger.info(
                 "Queued transfer to '%s' via %s (score=%.1f)",
@@ -331,8 +323,7 @@ class CallHandler:
         else:
             noanswer = self.config.get("receptionist:noanswer_message")
             conn.play_media_to_all(
-                self._tts(noanswer),
-                play_options=PlayOptions(operation_context="pre_fallback"),
+                self._tts(noanswer), operation_context="pre_fallback",
             )
             logger.info("No match found — queued fallback to reception")
 
@@ -367,8 +358,7 @@ class CallHandler:
         else:
             logger.info("Speech not recognised after 2 attempts — routing to reception")
             conn.play_media_to_all(
-                self._tts("I'm unable to understand. Let me connect you to our reception team."),
-                play_options=PlayOptions(operation_context="pre_fallback"),
+                self._tts("I'm unable to understand. Let me connect you to our reception team."), operation_context="pre_fallback",
             )
 
     # ── Transfer failed ───────────────────────────────────────
@@ -381,13 +371,11 @@ class CallHandler:
             conn.play_media_to_all(
                 self._tts(
                     "I'm sorry, we are unable to connect your call at this time. "
-                    "Please try again shortly."),
-                play_options=PlayOptions(operation_context="terminal_fallback"),
+                    "Please try again shortly."), operation_context="terminal_fallback",
             )
         else:
             conn.play_media_to_all(
-                self._tts("That extension is currently unavailable. Transferring you to reception."),
-                play_options=PlayOptions(operation_context="pre_fallback"),
+                self._tts("That extension is currently unavailable. Transferring you to reception."), operation_context="pre_fallback",
             )
 
     # ── Transfer helper ───────────────────────────────────────
@@ -399,18 +387,17 @@ class CallHandler:
                 display_name, aad_object_id
             )
             conn.play_media_to_all(
-                self._tts("I'm sorry, I'm unable to complete that transfer."),
-                play_options=PlayOptions(operation_context="terminal_fallback"),
+                self._tts("I'm sorry, I'm unable to complete that transfer."), operation_context="terminal_fallback",
             )
             return
 
         target = MicrosoftTeamsUserIdentifier(user_id=aad_object_id)
-        options = TransferCallToParticipantOptions(
-            target_participant=target,
-            operation_context="fallback_transfer" if is_fallback else "primary_transfer",
-        )
+        operation_context = "fallback_transfer" if is_fallback else "primary_transfer"
         try:
-            conn.transfer_call_to_participant(options)
+            conn.transfer_call_to_participant(
+                target_participant=target,
+                operation_context=operation_context,
+            )
             logger.info("Transfer initiated → '%s' (%s)", display_name, aad_object_id)
         except Exception as exc:
             logger.error("Transfer initiation exception for '%s': %s", display_name, exc)

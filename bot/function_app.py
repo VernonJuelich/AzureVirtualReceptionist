@@ -43,7 +43,6 @@ async def incoming_call(req: func.HttpRequest) -> func.HttpResponse:
     try:
         events = req.get_json()
 
-        # Log event type only — never log full payload (may contain call metadata)
         event_types = [e.get("type", "unknown") for e in events]
         logger.info(
             "incoming_call: received %d event(s): %s",
@@ -52,7 +51,6 @@ async def incoming_call(req: func.HttpRequest) -> func.HttpResponse:
         for event in events:
             event_type = event.get("type", "")
 
-            # EventGrid subscription validation handshake
             if event_type == "Microsoft.EventGrid.SubscriptionValidationEvent":
                 code = event["data"]["validationCode"]
                 logger.info("EventGrid validation handshake completed")
@@ -106,18 +104,15 @@ async def acs_callback(req: func.HttpRequest) -> func.HttpResponse:
 
 # ── Route 3: Health check ─────────────────────────────────────
 
-# [Issue 12] IMPORTANT: This route MUST remain at AuthLevel.FUNCTION (inherited
-# from the app-level setting above). Do NOT change it to AuthLevel.ANONYMOUS,
-# even for monitoring convenience. The response includes the company name from
-# App Configuration which would be exposed publicly without authentication.
-# Use Azure Monitor / Application Insights availability tests with a stored
-# function key for unauthenticated uptime monitoring instead.
+# IMPORTANT: This route MUST remain at AuthLevel.FUNCTION (inherited
+# from the app-level setting above). Do NOT change it to AuthLevel.ANONYMOUS.
+# The response includes the company name from App Configuration which would
+# be exposed publicly without authentication.
 @app.route(route="health", methods=["GET"])
 async def health(req: func.HttpRequest) -> func.HttpResponse:
     """
     Returns minimal status confirmation.
-    Does NOT expose config values — use Azure Portal / App Config for that.
-    Requires function key (?code=...). See note above re: auth level.
+    Requires function key (?code=...).
     """
     try:
         cfg = _get_handler().config
