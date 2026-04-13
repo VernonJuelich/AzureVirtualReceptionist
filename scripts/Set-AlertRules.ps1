@@ -11,14 +11,11 @@
       5. Client secret expiry warning (30 days)    → Email
 
     Fixes applied:
-      [Issue 5]  Action group webhook receiver creation now uses the reliable
-                 two-step approach: create the group first, then add the webhook
-                 receiver via az monitor action-group update. This avoids the
-                 fragile positional --action webhook syntax that varies across
-                 az CLI versions and was silently swallowed by 2>$null.
-      [Issue 13] Removed the dead $TransferQuery variable — the Kusto query
-                 string was constructed but never used. The scheduled-query alert
-                 now uses the query string directly, inline, where it is needed.
+      [Issue 5]  Teams webhook action group now uses --add-webhook-receiver,
+                 the correct az CLI parameter for adding a webhook receiver to
+                 an action group. The previous --add-action webhook / --service-uri
+                 combination is not valid syntax and would silently fail.
+      [Issue 13] Removed the dead $TransferQuery variable.
 
 .PARAMETER ResourceGroup
     Resource group containing the Function App and App Insights.
@@ -93,10 +90,9 @@ $EmailAgId = az monitor action-group show `
     --output         tsv
 
 # ── Action Group — Teams Webhook ──────────────────────────────
-# [Issue 5] Create the group first, then add the webhook receiver using
-# az monitor action-group update. The positional --action webhook syntax
-# is unreliable across az CLI versions and was previously silenced by
-# 2>$null, hiding failures. The two-step approach is stable across versions.
+# [Issue 5] Two-step approach: create the group, then add the webhook receiver
+# using --add-webhook-receiver (the correct az CLI parameter).
+# --add-action webhook / --service-uri is not valid syntax and fails silently.
 Write-Host "[2/6] Creating Teams webhook action group..." -ForegroundColor Yellow
 
 az monitor action-group create `
@@ -106,12 +102,10 @@ az monitor action-group create `
     --output         none
 
 az monitor action-group update `
-    --name              "ag-receptionist-teams" `
-    --resource-group    $ResourceGroup `
-    --add-action        webhook "TeamsChannel" `
-        --webhook-properties usecommonalertschema=true `
-        --service-uri    $TeamsWebhookUrl `
-    --output            none
+    --name                  "ag-receptionist-teams" `
+    --resource-group        $ResourceGroup `
+    --add-webhook-receiver  name="TeamsChannel" serviceUri=$TeamsWebhookUrl useCommonAlertSchema=true `
+    --output                none
 
 $TeamsAgId = az monitor action-group show `
     --name           "ag-receptionist-teams" `
@@ -124,8 +118,6 @@ Write-Host "    Teams webhook action group created." -ForegroundColor DarkGray
 # ── Alert 1: Transfer failures ────────────────────────────────
 Write-Host "[3/6] Creating transfer failure alert..." -ForegroundColor Yellow
 
-# [Issue 13] $TransferQuery was previously defined here but never used.
-# The query is now used directly in the az command below.
 az monitor scheduled-query create `
     --name              "alert-transfer-failures" `
     --resource-group    $ResourceGroup `
@@ -185,12 +177,6 @@ $KvName = az keyvault list `
     --output         tsv
 
 if ($KvName) {
-    $KvResourceId = az keyvault show `
-        --name           $KvName `
-        --resource-group $ResourceGroup `
-        --query          "id" `
-        --output         tsv
-
     az monitor scheduled-query create `
         --name              "alert-keyvault-failures" `
         --resource-group    $ResourceGroup `
@@ -211,19 +197,19 @@ if ($KvName) {
 Write-Host "`nSending test alert to Teams channel..." -ForegroundColor Yellow
 
 $TestCard = @{
-    "@type"    = "MessageCard"
-    "@context" = "https://schema.org/extensions"
-    "summary"  = "Virtual Receptionist Alerting Configured"
+    "@type"      = "MessageCard"
+    "@context"   = "https://schema.org/extensions"
+    "summary"    = "Virtual Receptionist Alerting Configured"
     "themeColor" = "0076D7"
-    "title"    = "✅ Virtual Receptionist Alerts Active"
-    "sections" = @(
+    "title"      = "✅ Virtual Receptionist Alerts Active"
+    "sections"   = @(
         @{
             "facts" = @(
-                @{ "name" = "Resource Group";   "value" = $ResourceGroup }
-                @{ "name" = "Function App";     "value" = $FunctionAppName }
-                @{ "name" = "Alert Email";      "value" = $AlertEmailAddress }
-                @{ "name" = "Alerts Created";   "value" = "Transfer failures, Exceptions, Availability, Key Vault" }
-                @{ "name" = "Status";           "value" = "All alert rules active" }
+                @{ "name" = "Resource Group"; "value" = $ResourceGroup }
+                @{ "name" = "Function App";   "value" = $FunctionAppName }
+                @{ "name" = "Alert Email";    "value" = $AlertEmailAddress }
+                @{ "name" = "Alerts Created"; "value" = "Transfer failures, Exceptions, Availability, Key Vault" }
+                @{ "name" = "Status";         "value" = "All alert rules active" }
             )
         }
     )
@@ -250,9 +236,9 @@ if ($AppClientId) {
     Write-Host "`nChecking App Registration secret expiry..." -ForegroundColor Yellow
     $SecretInfo = az ad app credential list --id $AppClientId --output json | ConvertFrom-Json
     foreach ($s in $SecretInfo) {
-        $Expiry     = [datetime]$s.endDateTime
-        $DaysLeft   = ($Expiry - (Get-Date)).Days
-        $ExpiryStr  = $Expiry.ToString("yyyy-MM-dd")
+        $Expiry    = [datetime]$s.endDateTime
+        $DaysLeft  = ($Expiry - (Get-Date)).Days
+        $ExpiryStr = $Expiry.ToString("yyyy-MM-dd")
         if ($DaysLeft -lt 60) {
             Write-Warning "Client secret expires in $DaysLeft days ($ExpiryStr)! Run Rotate-ClientSecret.ps1 soon."
         } else {

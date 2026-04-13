@@ -43,9 +43,10 @@ try {
 
     Write-Host "`nDeployment complete." -ForegroundColor Green
 
-    # Quick health check
-    Write-Host "Running health check..." -ForegroundColor Yellow
-    Start-Sleep -Seconds 20  # Wait for cold start
+    # Wait for cold start — Consumption plan with heavy dependencies
+    # (msgraph-sdk, azure-identity) needs 60s minimum. Retry up to 5 times.
+    Write-Host "Waiting 60 seconds for Function App cold start..." -ForegroundColor Yellow
+    Start-Sleep -Seconds 60
 
     $FnKey = az functionapp keys list `
         --name           $FunctionAppName `
@@ -54,15 +55,33 @@ try {
         --output         tsv
 
     $HealthUrl = "https://$FunctionAppName.azurewebsites.net/api/health?code=$FnKey"
-    $Response  = Invoke-RestMethod -Uri $HealthUrl -Method Get -TimeoutSec 30
 
-    if ($Response.status -eq "ok") {
-        Write-Host "Health check passed." -ForegroundColor Green
-        Write-Host "  Company:  $($Response.company)"
-        Write-Host "  Timezone: $($Response.timezone)"
-        Write-Host "  Voice:    $($Response.voice)"
-    } else {
-        Write-Warning "Health check returned: $($Response.status)"
+    $MaxAttempts = 5
+    $Attempt = 1
+    $Passed = $false
+
+    while ($Attempt -le $MaxAttempts) {
+        Write-Host "Health check attempt $Attempt of $MaxAttempts..." -ForegroundColor Yellow
+        try {
+            $Response = Invoke-RestMethod -Uri $HealthUrl -Method Get -TimeoutSec 20 -ErrorAction Stop
+            if ($Response.status -eq "ok") {
+                Write-Host "Health check passed." -ForegroundColor Green
+                Write-Host "  Company: $($Response.company)"
+                $Passed = $true
+                break
+            }
+        } catch {
+            Write-Host "  Health check error: $_" -ForegroundColor DarkGray
+        }
+        if ($Attempt -lt $MaxAttempts) {
+            Write-Host "  Waiting 15s before retry..." -ForegroundColor DarkGray
+            Start-Sleep -Seconds 15
+        }
+        $Attempt++
+    }
+
+    if (-not $Passed) {
+        Write-Warning "Health check failed after $MaxAttempts attempts. Check Azure Portal logs."
     }
 } finally {
     Pop-Location

@@ -60,10 +60,12 @@ Test-Step "Function App reachable" {
 }
 
 # ── Test 2: Health returns OK ─────────────────────────────────
+# NOTE: The health endpoint returns only {status, company} — it deliberately
+# omits timezone and voice to limit information exposure. Do not assert those.
 Test-Step "Health endpoint returns OK" {
     $r = Invoke-RestMethod -Uri "$BaseUrl/health?code=$FnKey" -Method Get -TimeoutSec 15 -ErrorAction Stop
     if ($r.status -ne "ok") { throw "Status: $($r.status)" }
-    Write-Host " (company=$($r.company), tz=$($r.timezone))" -NoNewline -ForegroundColor DarkGray
+    Write-Host " (company=$($r.company))" -NoNewline -ForegroundColor DarkGray
 }
 
 # ── Test 3: App Configuration has required keys ───────────────
