@@ -35,6 +35,30 @@ curl "https://contoso-receptionist.azurewebsites.net/api/health?code=YOUR-FUNCTI
 
 ---
 
+## Architecture Notes — Caching and Scale-Out
+
+The bot runs on an Azure Functions Consumption plan, which may spin up multiple
+warm instances under load. Two important caching behaviours to understand:
+
+**Staff directory cache (Graph API):** Each Function App instance holds its own
+in-memory staff directory cache with a 5-minute TTL. Instances do NOT share this
+cache. On a cold start or after the TTL expires, each instance makes its own
+Graph API call to refresh. This is expected behaviour — Graph API calls are fast
+and the directory rarely changes. Do not be alarmed if you see multiple
+"Fetching group members from Graph API" log entries in a short window — each
+entry is from a different instance.
+
+**Pending transfer state:** When a caller's name is matched, the transfer target
+is stored in Azure Table Storage (not in memory) before the confirmation audio
+plays. This means the `PlayCompleted` callback — which may land on a different
+Function App instance than the one that handled the speech recognition — can
+reliably retrieve and complete the transfer. If you see "No pending transfer found
+in Table Storage" in logs, check that the `pendingtransfers` table exists in the
+Function App's storage account and that the AzureWebJobsStorage connection string
+is configured.
+
+---
+
 ## Call Not Reaching Bot
 
 **Symptom:** Phone rings but no greeting plays. Bot logs show no activity.
@@ -181,21 +205,27 @@ No redeployment needed — takes effect within 5 minutes (cache TTL).
    .\scripts\Get-CallLogs.ps1 -Filter "Transfer FAILED"
    ```
 
-2. **Verify the AAD Object ID is correct**
+2. **Check pending transfer state (Table Storage)**
+   If logs show "No pending transfer found in Table Storage", verify:
+   - The `pendingtransfers` table exists in the Function App's storage account
+   - The `AzureWebJobsStorage` app setting is correctly configured
+   - Table Storage is accessible from the Function App (no firewall rule blocking it)
+
+3. **Verify the AAD Object ID is correct**
    The `default_reception_aad_id` in App Configuration must be the user's **Azure AD Object ID**, not their email or UPN.
    ```powershell
    az ad user show --id reception@contoso.com --query id --output tsv
    ```
 
-3. **Verify ACS ↔ Teams interop is still connected**
+4. **Verify ACS ↔ Teams interop is still connected**
    ```
    ACS Resource > Settings > Microsoft Teams interoperability > Status: Connected
    ```
 
-4. **Check the target user has a Teams Phone license**
+5. **Check the target user has a Teams Phone license**
    The user being transferred to must have a Teams Phone license and be homed in Teams (not Skype for Business).
 
-5. **Check Calls.Initiate.All admin consent**
+6. **Check Calls.Initiate.All admin consent**
    ```
    Azure AD > App Registrations > VirtualReceptionist > API Permissions
    ```
@@ -260,9 +290,9 @@ No redeployment needed — takes effect within 5 minutes (cache TTL).
 
 **Symptom:** Changed a value in App Configuration but bot still uses old value.
 
-The bot caches App Config for 5 minutes. After making a change:
+The bot caches App Config for 5 minutes per instance. After making a change:
 - Wait 5 minutes, then make a test call
-- Or restart the Function App to force immediate refresh:
+- Or restart the Function App to force immediate refresh on all instances:
   ```powershell
   az functionapp restart --name contoso-receptionist --resource-group rg-virtual-receptionist
   ```
@@ -288,6 +318,11 @@ The bot caches App Config for 5 minutes. After making a change:
 
 3. **View workflow logs**
    GitHub > Actions tab > select the failed run > expand the failed step
+
+4. **Health check timeout**
+   The workflow retries the health check 5 times with 15-second gaps after an
+   initial 60-second wait. If all retries fail, check the Function App logs in
+   Azure Portal for startup errors (missing app settings, Key Vault access failure, etc.)
 
 ---
 
@@ -333,4 +368,8 @@ az appconfig kv list --name contoso-receptionist-config --key "receptionist:*" -
 
 # 5. App permissions
 az ad app permission list --id YOUR-APP-OBJECT-ID --output table
+
+# 6. Pending transfers table (check for stuck entries)
+az storage entity query --table-name pendingtransfers \
+    --account-name YOUR-STORAGE-ACCOUNT --output table
 ```
