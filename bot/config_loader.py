@@ -12,11 +12,13 @@ Everything else comes from App Configuration or Key Vault at runtime.
 No credentials are stored in code or config files.
 
 Fixes applied:
-  - [Issue 4] _cache and _cache_time moved from class attributes to instance
+  - [Issue 4]  _cache and _cache_time moved from class attributes to instance
                attributes in __init__, preventing shared mutable state across
                multiple ConfigLoader instances.
-  - [Issue 7] Business hours split now uses maxsplit=1 as defensive practice
+  - [Issue 7]  Business hours split now uses maxsplit=1 as defensive practice
                to prevent unexpected splits on malformed values.
+  - [Flake8]   Removed alignment spaces in day_map dict (E241 multiple spaces
+               after ':').
 """
 
 import os
@@ -145,14 +147,15 @@ class ConfigLoader:
         Returns dict: day_name → (start_str, end_str) or None if closed.
         Validates format — invalid entries default to closed with a warning.
         """
+        # [Flake8 E241] Single space after ':' — alignment spaces removed.
         day_map = {
-            "monday":    "receptionist:business_hours_mon",
-            "tuesday":   "receptionist:business_hours_tue",
+            "monday": "receptionist:business_hours_mon",
+            "tuesday": "receptionist:business_hours_tue",
             "wednesday": "receptionist:business_hours_wed",
-            "thursday":  "receptionist:business_hours_thu",
-            "friday":    "receptionist:business_hours_fri",
-            "saturday":  "receptionist:business_hours_sat",
-            "sunday":    "receptionist:business_hours_sun",
+            "thursday": "receptionist:business_hours_thu",
+            "friday": "receptionist:business_hours_fri",
+            "saturday": "receptionist:business_hours_sat",
+            "sunday": "receptionist:business_hours_sun",
         }
         result = {}
         for day, key in day_map.items():
