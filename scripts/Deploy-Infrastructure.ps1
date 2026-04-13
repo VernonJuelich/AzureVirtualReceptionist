@@ -17,6 +17,14 @@
       11. Role assignments (Key Vault + App Config → Function App MI)
       12. App Configuration seed values
 
+    Fixes applied:
+      [Issue 10] Client secret is now written to a temporary file and passed
+                 via --file flag to avoid the secret appearing in shell history
+                 or process listings. The temp file is deleted immediately.
+      [Issue 11] Deployment summary JSON is saved outside the repo directory
+                 (to $env:TEMP) to prevent accidental git commits. A .gitignore
+                 entry is also written to the repo root for belt-and-suspenders.
+
 .PARAMETER TenantId
     Azure AD Tenant ID.
 
@@ -63,7 +71,6 @@ Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
 
 # ── Derived resource names ─────────────────────────────────────────
-# Storage account: letters/numbers only, 3-24 chars, globally unique
 $StorageSuffix   = "fnstore"
 $StorageRaw      = ($OrgPrefix -replace '[^a-z0-9]','') + $StorageSuffix
 $StorageAcctName = $StorageRaw.Substring(0, [Math]::Min($StorageRaw.Length, 24))
@@ -202,7 +209,7 @@ az functionapp config appsettings set `
 # ── App Registration ───────────────────────────────────────────────
 Write-Host "[9/12] Creating App Registration '$AppRegName'..." -ForegroundColor Yellow
 
-$AppRegJson   = az ad app create `
+$AppRegJson  = az ad app create `
     --display-name      $AppRegName `
     --sign-in-audience  AzureADMyOrg `
     --output            json | ConvertFrom-Json
@@ -256,9 +263,31 @@ $StaffGroupId = $GroupJson.id
 # ── Key Vault secrets ──────────────────────────────────────────────
 Write-Host "[11/12] Storing secrets in Key Vault and assigning roles..." -ForegroundColor Yellow
 
-az keyvault secret set --vault-name $KvName --name "acs-connection-string" --value $AcsConnString --output none
-az keyvault secret set --vault-name $KvName --name "app-client-id"         --value $AppClientId   --output none
-az keyvault secret set --vault-name $KvName --name "app-client-secret"     --value $ClientSecret  --output none
+# [Issue 10] Write each secret to a temp file and use --file to prevent the
+# secret value appearing in shell history or process listings. Temp files are
+# deleted immediately after each az keyvault secret set call.
+function Set-KeyVaultSecretFromValue {
+    param([string]$VaultName, [string]$SecretName, [string]$SecretValue)
+    $TempFile = [System.IO.Path]::GetTempFileName()
+    try {
+        # Write without trailing newline to avoid corrupting the secret value
+        [System.IO.File]::WriteAllText($TempFile, $SecretValue)
+        az keyvault secret set `
+            --vault-name $VaultName `
+            --name       $SecretName `
+            --file       $TempFile `
+            --output     none
+    } finally {
+        Remove-Item -Path $TempFile -Force -ErrorAction SilentlyContinue
+    }
+}
+
+Set-KeyVaultSecretFromValue -VaultName $KvName -SecretName "acs-connection-string" -SecretValue $AcsConnString
+Set-KeyVaultSecretFromValue -VaultName $KvName -SecretName "app-client-id"         -SecretValue $AppClientId
+Set-KeyVaultSecretFromValue -VaultName $KvName -SecretName "app-client-secret"     -SecretValue $ClientSecret
+
+# Clear the secret from memory as soon as it's stored
+$ClientSecret = $null
 
 # Role: Function App MI → Key Vault Secrets User
 $KvScope = az keyvault show `
@@ -293,6 +322,24 @@ Write-Host "[12/12] Seeding App Configuration..." -ForegroundColor Yellow
     -AppConfigName $AppConfigName `
     -ConfigFile    "$PSScriptRoot\..\config\appconfig-seed.json"
 
+# ── Ensure deployment summary cannot be committed accidentally ─────
+# [Issue 11] Write the summary to $env:TEMP (outside the repo) and add a
+# .gitignore entry as a belt-and-suspenders guard.
+$RepoRoot   = Resolve-Path "$PSScriptRoot\.."
+$GitIgnore  = Join-Path $RepoRoot ".gitignore"
+$IgnoreLine = "deployment-summary-*.json"
+
+if (Test-Path $GitIgnore) {
+    $Existing = Get-Content $GitIgnore -Raw
+    if ($Existing -notmatch [regex]::Escape($IgnoreLine)) {
+        Add-Content -Path $GitIgnore -Value "`n# Deployment summaries — contain IDs and expiry dates, never commit`n$IgnoreLine"
+        Write-Host "    Added '$IgnoreLine' to .gitignore" -ForegroundColor DarkGray
+    }
+} else {
+    Set-Content -Path $GitIgnore -Value "# Deployment summaries — contain IDs and expiry dates, never commit`n$IgnoreLine"
+    Write-Host "    Created .gitignore with '$IgnoreLine'" -ForegroundColor DarkGray
+}
+
 # ── Summary ────────────────────────────────────────────────────────
 Write-Host "`n=== Deployment Complete ===" -ForegroundColor Green
 Write-Host ""
@@ -317,7 +364,8 @@ Write-Host "  7. Run: .\Set-AlertRules.ps1"
 Write-Host ""
 Write-Host "SECRET EXPIRY: $SecretExpiry — set your calendar reminder NOW" -ForegroundColor Red
 
-# Save deployment summary
+# [Issue 11] Save deployment summary outside the repo to $env:TEMP.
+# This prevents accidental git commits of the summary file.
 $Summary = [ordered]@{
     DeployedAt        = (Get-Date -Format "o")
     OrgPrefix         = $OrgPrefix
@@ -338,7 +386,8 @@ $Summary = [ordered]@{
     SecretExpiry      = $SecretExpiry
 }
 
-$SummaryFile = "$PSScriptRoot\..\deployment-summary-$OrgPrefix.json"
+$SummaryFile = Join-Path $env:TEMP "deployment-summary-$OrgPrefix.json"
 $Summary | ConvertTo-Json | Out-File -FilePath $SummaryFile -Encoding utf8
 Write-Host "`nDeployment summary saved to: $SummaryFile" -ForegroundColor DarkGray
+Write-Host "(Saved outside repo to prevent accidental git commit)" -ForegroundColor DarkGray
 Write-Host "Keep this file — you will need the values for subsequent scripts." -ForegroundColor DarkGray

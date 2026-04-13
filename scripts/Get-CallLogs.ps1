@@ -12,11 +12,22 @@
     How many hours back to query. Default: 24
 
 .PARAMETER Filter
-    Optional: filter logs by keyword (e.g. "FAILED", "Hanson", "Transfer")
+    Optional: filter logs by keyword (e.g. "FAILED", "Transfer")
+    Single quotes in the filter value are automatically escaped to prevent
+    KQL syntax errors.
 
 .EXAMPLE
     .\Get-CallLogs.ps1 -AppInsightsName "contoso-receptionist-ai" -ResourceGroup "rg-virtual-receptionist" -Hours 48
     .\Get-CallLogs.ps1 -AppInsightsName "contoso-receptionist-ai" -ResourceGroup "rg-virtual-receptionist" -Filter "FAILED"
+    .\Get-CallLogs.ps1 -AppInsightsName "contoso-receptionist-ai" -ResourceGroup "rg-virtual-receptionist" -Filter "O'Brien"
+
+.NOTES
+    Fixes applied:
+      [Issue 16] The -Filter value is now sanitised before interpolation into
+                 the KQL query string. Single quotes are doubled ('' is the KQL
+                 escape sequence for a literal single quote inside a string
+                 literal), preventing KQL injection or syntax errors when the
+                 filter contains apostrophes (e.g. names like "O'Brien").
 #>
 
 [CmdletBinding()]
@@ -33,7 +44,15 @@ $AppId = az monitor app-insights component show `
     --query          "appId" `
     --output         tsv
 
-$WhereClause = if ($Filter) { "| where message contains '$Filter'" } else { "" }
+# [Issue 16] Sanitise the filter value before embedding it in the KQL string.
+# In KQL, a single quote inside a string literal is escaped by doubling it: ''.
+# Without this, a filter like "O'Brien" would break the KQL syntax, and a
+# malicious value could manipulate the query structure.
+$WhereClause = ""
+if ($Filter) {
+    $SafeFilter  = $Filter -replace "'", "''"
+    $WhereClause = "| where message contains '$SafeFilter'"
+}
 
 $Query = @"
 traces

@@ -13,6 +13,12 @@
       4. Removes the old secret from the App Registration
       5. Sends a confirmation to the Teams channel
 
+    Fixes applied:
+      [Issue 10] The new client secret is now written to a temporary file and
+                 passed to Key Vault via --file, preventing the secret value
+                 from appearing in shell history or process listings. The temp
+                 file is deleted immediately after the Key Vault update.
+
 .PARAMETER AppObjectId
     The App Registration Object ID (NOT client ID).
     Found at: Azure AD > App Registrations > select app > Object ID
@@ -69,6 +75,9 @@ $OldKeyId = $Existing | Sort-Object endDateTime | Select-Object -Last 1 | Select
 # ── Create new secret ─────────────────────────────────────────
 Write-Host "`n[2/5] Creating new client secret (24 month expiry)..." -ForegroundColor Yellow
 
+$NewSecretValue  = $null
+$NewSecretExpiry = $null
+
 if ($PSCmdlet.ShouldProcess($AppObjectId, "az ad app credential reset")) {
     $NewSecret = az ad app credential reset `
         --id     $AppObjectId `
@@ -82,16 +91,27 @@ if ($PSCmdlet.ShouldProcess($AppObjectId, "az ad app credential reset")) {
 }
 
 # ── Update Key Vault ──────────────────────────────────────────
+# [Issue 10] Write secret to a temp file and use --file to keep the value out
+# of shell history and process listings. Temp file is deleted immediately.
 Write-Host "[3/5] Updating Key Vault secret 'app-client-secret'..." -ForegroundColor Yellow
 
 if ($PSCmdlet.ShouldProcess($KeyVaultName, "az keyvault secret set")) {
-    az keyvault secret set `
-        --vault-name $KeyVaultName `
-        --name       "app-client-secret" `
-        --value      $NewSecretValue `
-        --output     none
+    $TempFile = [System.IO.Path]::GetTempFileName()
+    try {
+        # Write without trailing newline to avoid corrupting the secret value
+        [System.IO.File]::WriteAllText($TempFile, $NewSecretValue)
+        az keyvault secret set `
+            --vault-name $KeyVaultName `
+            --name       "app-client-secret" `
+            --file       $TempFile `
+            --output     none
+        Write-Host "    Key Vault updated." -ForegroundColor Green
+    } finally {
+        Remove-Item -Path $TempFile -Force -ErrorAction SilentlyContinue
+    }
 
-    Write-Host "    Key Vault updated." -ForegroundColor Green
+    # Clear from memory as soon as it's stored
+    $NewSecretValue = $null
 }
 
 # ── Restart Function App to pick up new secret ───────────────
@@ -104,8 +124,8 @@ if ($PSCmdlet.ShouldProcess($FunctionAppName, "az functionapp restart")) {
         --output         none
 
     Write-Host "    Function App restarted." -ForegroundColor Green
-    Write-Host "    Waiting 30 seconds for startup..." -ForegroundColor DarkGray
-    Start-Sleep -Seconds 30
+    Write-Host "    Waiting 60 seconds for startup..." -ForegroundColor DarkGray
+    Start-Sleep -Seconds 60
 }
 
 # ── Verify health endpoint ────────────────────────────────────

@@ -10,6 +10,16 @@
       4. Key Vault access failures                 → Email + Teams
       5. Client secret expiry warning (30 days)    → Email
 
+    Fixes applied:
+      [Issue 5]  Action group webhook receiver creation now uses the reliable
+                 two-step approach: create the group first, then add the webhook
+                 receiver via az monitor action-group update. This avoids the
+                 fragile positional --action webhook syntax that varies across
+                 az CLI versions and was silently swallowed by 2>$null.
+      [Issue 13] Removed the dead $TransferQuery variable — the Kusto query
+                 string was constructed but never used. The scheduled-query alert
+                 now uses the query string directly, inline, where it is needed.
+
 .PARAMETER ResourceGroup
     Resource group containing the Function App and App Insights.
 
@@ -83,14 +93,25 @@ $EmailAgId = az monitor action-group show `
     --output         tsv
 
 # ── Action Group — Teams Webhook ──────────────────────────────
+# [Issue 5] Create the group first, then add the webhook receiver using
+# az monitor action-group update. The positional --action webhook syntax
+# is unreliable across az CLI versions and was previously silenced by
+# 2>$null, hiding failures. The two-step approach is stable across versions.
 Write-Host "[2/6] Creating Teams webhook action group..." -ForegroundColor Yellow
 
 az monitor action-group create `
     --name           "ag-receptionist-teams" `
     --resource-group $ResourceGroup `
     --short-name     "RecepTeams" `
-    --action         webhook "TeamsChannel" $TeamsWebhookUrl `
     --output         none
+
+az monitor action-group update `
+    --name              "ag-receptionist-teams" `
+    --resource-group    $ResourceGroup `
+    --add-action        webhook "TeamsChannel" `
+        --webhook-properties usecommonalertschema=true `
+        --service-uri    $TeamsWebhookUrl `
+    --output            none
 
 $TeamsAgId = az monitor action-group show `
     --name           "ag-receptionist-teams" `
@@ -98,48 +119,43 @@ $TeamsAgId = az monitor action-group show `
     --query          "id" `
     --output         tsv
 
-# Helper: combined action IDs
-$BothActions = "$EmailAgId $TeamsAgId"
+Write-Host "    Teams webhook action group created." -ForegroundColor DarkGray
 
 # ── Alert 1: Transfer failures ────────────────────────────────
 Write-Host "[3/6] Creating transfer failure alert..." -ForegroundColor Yellow
 
+# [Issue 13] $TransferQuery was previously defined here but never used.
+# The query is now used directly in the az command below.
 az monitor scheduled-query create `
-    --name           "alert-transfer-failures" `
-    --resource-group $ResourceGroup `
-    --scopes         $AiResourceId `
-    --condition      "count 'traces | where message contains \"Transfer FAILED\"' > 3" `
-    --window-size    "PT5M" `
+    --name              "alert-transfer-failures" `
+    --resource-group    $ResourceGroup `
+    --scopes            $AiResourceId `
+    --condition-query   "traces | where timestamp > ago(5m) | where message contains 'Transfer FAILED' | count" `
+    --condition         "count > 3" `
+    --window-size       "PT5M" `
     --evaluation-frequency "PT5M" `
-    --severity       2 `
-    --description    "More than 3 call transfer failures in 5 minutes" `
-    --action         $EmailAgId $TeamsAgId `
-    --output         none 2>$null
-
-# Kusto query version (more precise)
-$TransferQuery = @"
-traces
-| where timestamp > ago(5m)
-| where message contains "Transfer FAILED"
-| count
-"@
+    --severity          2 `
+    --description       "More than 3 call transfer failures in 5 minutes" `
+    --action-groups     $EmailAgId $TeamsAgId `
+    --output            none
 
 Write-Host "    Transfer failure alert created." -ForegroundColor DarkGray
 
 # ── Alert 2: Function App exceptions ─────────────────────────
 Write-Host "[4/6] Creating Function App exception alert..." -ForegroundColor Yellow
 
-az monitor metrics alert create `
-    --name           "alert-function-exceptions" `
-    --resource-group $ResourceGroup `
-    --scopes         $FnResourceId `
-    --condition      "avg FunctionExecutionUnits > 0" `
-    --description    "Function App exceptions detected" `
-    --severity       2 `
-    --window-size    "PT5M" `
+az monitor scheduled-query create `
+    --name              "alert-function-exceptions" `
+    --resource-group    $ResourceGroup `
+    --scopes            $AiResourceId `
+    --condition-query   "exceptions | where timestamp > ago(5m) | where cloud_RoleName contains 'receptionist' | count" `
+    --condition         "count > 0" `
+    --window-size       "PT5M" `
     --evaluation-frequency "PT1M" `
-    --action         $EmailAgId $TeamsAgId `
-    --output         none 2>$null
+    --severity          1 `
+    --description       "Unhandled exception in the Function App" `
+    --action-groups     $EmailAgId $TeamsAgId `
+    --output            none
 
 Write-Host "    Exception alert created." -ForegroundColor DarkGray
 
@@ -156,7 +172,7 @@ az monitor metrics alert create `
     --window-size    "PT1H" `
     --evaluation-frequency "PT15M" `
     --action         $EmailAgId $TeamsAgId `
-    --output         none 2>$null
+    --output         none
 
 Write-Host "    Availability alert created." -ForegroundColor DarkGray
 
@@ -175,17 +191,18 @@ if ($KvName) {
         --query          "id" `
         --output         tsv
 
-    az monitor metrics alert create `
-        --name           "alert-keyvault-failures" `
-        --resource-group $ResourceGroup `
-        --scopes         $KvResourceId `
-        --condition      "count ServiceApiLatency > 5000" `
-        --description    "Key Vault access latency or failures" `
-        --severity       1 `
-        --window-size    "PT5M" `
+    az monitor scheduled-query create `
+        --name              "alert-keyvault-failures" `
+        --resource-group    $ResourceGroup `
+        --scopes            $AiResourceId `
+        --condition-query   "traces | where timestamp > ago(5m) | where message contains 'Key Vault' and (message contains '403' or message contains 'Forbidden' or message contains 'Unauthorized') | count" `
+        --condition         "count > 0" `
+        --window-size       "PT5M" `
         --evaluation-frequency "PT5M" `
-        --action         $EmailAgId $TeamsAgId `
-        --output         none 2>$null
+        --severity          1 `
+        --description       "Key Vault access failures — secrets may be inaccessible" `
+        --action-groups     $EmailAgId $TeamsAgId `
+        --output            none
 
     Write-Host "    Key Vault alert created." -ForegroundColor DarkGray
 }
