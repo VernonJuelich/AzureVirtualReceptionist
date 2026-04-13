@@ -1,0 +1,22 @@
+# Deployment summaries — contain resource IDs and expiry dates, never commit
+# These are saved to $env:TEMP by Deploy-Infrastructure.ps1
+deployment-summary-*.json
+
+# Python
+__pycache__/
+*.py[cod]
+.python_packages/
+*.egg-info/
+.venv/
+venv/
+
+# Azure Functions local settings — contains local connection strings
+local.settings.json
+
+# IDE
+.vscode/
+.idea/
+
+# OS
+.DS_Store
+Thumbs.db
