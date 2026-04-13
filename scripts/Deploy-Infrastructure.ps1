@@ -14,7 +14,7 @@
       8.  AD App Registration + API permissions
       9.  AD Security Group (staff directory)
       10. Key Vault secrets
-      11. Role assignments (Key Vault + App Config → Function App MI)
+      11. Role assignments (Key Vault + App Config -> Function App MI)
       12. App Configuration seed values
 
     Fixes applied:
@@ -83,7 +83,7 @@ $AppInsightsName = "$OrgPrefix-receptionist-ai"
 $AppRegName      = "VirtualReceptionist-$OrgPrefix"
 $GroupName       = "VirtualReceptionist-Staff-$OrgPrefix"
 
-Write-Host "`n=== Azure Virtual Receptionist — Infrastructure Deployment ===" -ForegroundColor Cyan
+Write-Host "`n=== Azure Virtual Receptionist -- Infrastructure Deployment ===" -ForegroundColor Cyan
 Write-Host "Tenant:          $TenantId"
 Write-Host "Subscription:    $SubscriptionId"
 Write-Host "Resource Group:  $ResourceGroup"
@@ -102,10 +102,13 @@ Write-Host "[2/12] Creating resource group '$ResourceGroup'..." -ForegroundColor
 az group create --name $ResourceGroup --location $Location --output none
 
 # ── ACS ────────────────────────────────────────────────────────────
+# NOTE: ACS resource type only accepts 'global' as --location.
+# Data residency is controlled separately via --data-location.
 Write-Host "[3/12] Creating ACS resource '$AcsName'..." -ForegroundColor Yellow
 az communication create `
     --name           $AcsName `
     --resource-group $ResourceGroup `
+    --location       global `
     --data-location  $AcsDataLocation `
     --output         none
 
@@ -181,6 +184,7 @@ az functionapp create `
     --runtime                   python `
     --runtime-version           3.11 `
     --functions-version         4 `
+    --os-type                   linux `
     --output                    none
 
 # Enable Managed Identity
@@ -263,6 +267,25 @@ $StaffGroupId = $GroupJson.id
 # ── Key Vault secrets ──────────────────────────────────────────────
 Write-Host "[11/12] Storing secrets in Key Vault and assigning roles..." -ForegroundColor Yellow
 
+# Grant the CLI caller 'Key Vault Secrets Officer' so it can write secrets.
+# This is needed because the vault uses RBAC (not access policies).
+$CallerObjectId = az ad signed-in-user show --query id --output tsv
+$KvScopeEarly = az keyvault show `
+    --name           $KvName `
+    --resource-group $ResourceGroup `
+    --query          "id" `
+    --output         tsv
+
+az role assignment create `
+    --role                    "Key Vault Secrets Officer" `
+    --assignee-object-id      $CallerObjectId `
+    --assignee-principal-type User `
+    --scope                   $KvScopeEarly `
+    --output                  none
+
+Write-Host "    Waiting 15s for RBAC to propagate..." -ForegroundColor DarkGray
+Start-Sleep -Seconds 15
+
 # [Issue 10] Write each secret to a temp file and use --file to prevent the
 # secret value appearing in shell history or process listings. Temp files are
 # deleted immediately after each az keyvault secret set call.
@@ -270,14 +293,14 @@ function Set-KeyVaultSecretFromValue {
     param([string]$VaultName, [string]$SecretName, [string]$SecretValue)
     $TempFile = [System.IO.Path]::GetTempFileName()
     try {
-        # Write without trailing newline to avoid corrupting the secret value
         [System.IO.File]::WriteAllText($TempFile, $SecretValue)
         az keyvault secret set `
             --vault-name $VaultName `
             --name       $SecretName `
             --file       $TempFile `
             --output     none
-    } finally {
+    }
+    finally {
         Remove-Item -Path $TempFile -Force -ErrorAction SilentlyContinue
     }
 }
@@ -286,14 +309,15 @@ Set-KeyVaultSecretFromValue -VaultName $KvName -SecretName "acs-connection-strin
 Set-KeyVaultSecretFromValue -VaultName $KvName -SecretName "app-client-id"         -SecretValue $AppClientId
 Set-KeyVaultSecretFromValue -VaultName $KvName -SecretName "app-client-secret"     -SecretValue $ClientSecret
 
-# Clear the secret from memory as soon as it's stored
+# Clear the secret from memory as soon as it is stored
 $ClientSecret = $null
 
-# Role: Function App MI → Key Vault Secrets User
+# Role: Function App MI -> Key Vault Secrets User
 $KvScope = az keyvault show `
     --name           $KvName `
     --resource-group $ResourceGroup `
-    --query          "id" --output tsv
+    --query          "id" `
+    --output         tsv
 
 az role assignment create `
     --role                    "Key Vault Secrets User" `
@@ -302,11 +326,12 @@ az role assignment create `
     --scope                   $KvScope `
     --output                  none
 
-# Role: Function App MI → App Configuration Data Reader
+# Role: Function App MI -> App Configuration Data Reader
 $AppConfigScope = az appconfig show `
     --name           $AppConfigName `
     --resource-group $ResourceGroup `
-    --query          "id" --output tsv
+    --query          "id" `
+    --output         tsv
 
 az role assignment create `
     --role                    "App Configuration Data Reader" `
@@ -323,8 +348,7 @@ Write-Host "[12/12] Seeding App Configuration..." -ForegroundColor Yellow
     -ConfigFile    "$PSScriptRoot\..\config\appconfig-seed.json"
 
 # ── Ensure deployment summary cannot be committed accidentally ─────
-# [Issue 11] Write the summary to $env:TEMP (outside the repo) and add a
-# .gitignore entry as a belt-and-suspenders guard.
+# [Issue 11] Add .gitignore entry and save summary outside repo.
 $RepoRoot   = Resolve-Path "$PSScriptRoot\.."
 $GitIgnore  = Join-Path $RepoRoot ".gitignore"
 $IgnoreLine = "deployment-summary-*.json"
@@ -332,11 +356,12 @@ $IgnoreLine = "deployment-summary-*.json"
 if (Test-Path $GitIgnore) {
     $Existing = Get-Content $GitIgnore -Raw
     if ($Existing -notmatch [regex]::Escape($IgnoreLine)) {
-        Add-Content -Path $GitIgnore -Value "`n# Deployment summaries — contain IDs and expiry dates, never commit`n$IgnoreLine"
+        Add-Content -Path $GitIgnore -Value "`n# Deployment summaries -- contain IDs and expiry dates, never commit`n$IgnoreLine"
         Write-Host "    Added '$IgnoreLine' to .gitignore" -ForegroundColor DarkGray
     }
-} else {
-    Set-Content -Path $GitIgnore -Value "# Deployment summaries — contain IDs and expiry dates, never commit`n$IgnoreLine"
+}
+else {
+    Set-Content -Path $GitIgnore -Value "# Deployment summaries -- contain IDs and expiry dates, never commit`n$IgnoreLine"
     Write-Host "    Created .gitignore with '$IgnoreLine'" -ForegroundColor DarkGray
 }
 
@@ -362,10 +387,9 @@ Write-Host "  5. Add GitHub secrets (see README.md), then push to trigger deploy
 Write-Host "  6. Run: .\Test-EndToEnd.ps1"
 Write-Host "  7. Run: .\Set-AlertRules.ps1"
 Write-Host ""
-Write-Host "SECRET EXPIRY: $SecretExpiry — set your calendar reminder NOW" -ForegroundColor Red
+Write-Host "SECRET EXPIRY: $SecretExpiry -- set your calendar reminder NOW" -ForegroundColor Red
 
-# [Issue 11] Save deployment summary outside the repo to $env:TEMP.
-# This prevents accidental git commits of the summary file.
+# [Issue 11] Save deployment summary to $env:TEMP (outside repo).
 $Summary = [ordered]@{
     DeployedAt        = (Get-Date -Format "o")
     OrgPrefix         = $OrgPrefix
@@ -390,4 +414,4 @@ $SummaryFile = Join-Path $env:TEMP "deployment-summary-$OrgPrefix.json"
 $Summary | ConvertTo-Json | Out-File -FilePath $SummaryFile -Encoding utf8
 Write-Host "`nDeployment summary saved to: $SummaryFile" -ForegroundColor DarkGray
 Write-Host "(Saved outside repo to prevent accidental git commit)" -ForegroundColor DarkGray
-Write-Host "Keep this file — you will need the values for subsequent scripts." -ForegroundColor DarkGray
+Write-Host "Keep this file -- you will need the values for subsequent scripts." -ForegroundColor DarkGray

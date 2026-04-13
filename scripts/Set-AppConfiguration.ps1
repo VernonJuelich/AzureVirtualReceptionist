@@ -58,10 +58,6 @@ if (-not (Test-Path $ConfigFile)) {
 $Config = Get-Content $ConfigFile -Raw | ConvertFrom-Json
 
 # ── Write all key-value pairs ─────────────────────────────────
-$Properties = $Config.PSObject.Properties
-$Total   = @($Properties).Count
-$Current = 0
-
 foreach ($prop in $Properties) {
     $Current++
     $Key   = $prop.Name
@@ -69,12 +65,22 @@ foreach ($prop in $Properties) {
 
     Write-Host "  [$Current/$Total] Setting '$Key'..." -ForegroundColor DarkGray
 
-    az appconfig kv set `
-        --name      $AppConfigName `
-        --key       $Key `
-        --value     $Value `
-        --yes `
-        --output    none
+    if ([string]::IsNullOrEmpty($Value)) {
+        # Empty string must be passed as explicit empty quotes
+        az appconfig kv set `
+            --name      $AppConfigName `
+            --key       $Key `
+            --value     "" `
+            --yes `
+            --output    none
+    } else {
+        az appconfig kv set `
+            --name      $AppConfigName `
+            --key       $Key `
+            --value     $Value `
+            --yes `
+            --output    none
+    }
 }
 
 Write-Host "`nDone — $Total keys written to '$AppConfigName'." -ForegroundColor Green
