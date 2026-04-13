@@ -13,11 +13,12 @@ Callers speak a staff member's name → Azure AI Speech transcribes it → phone
 │   └── workflows/
 │       └── deploy.yml          # GitHub Actions — deploy bot to Azure Function App
 ├── bot/
-│   ├── receptionist.py         # Main Azure Function bot (Python)
+│   ├── function_app.py         # Azure Functions v2 entry point (HTTP triggers)
+│   ├── call_handler.py         # ACS call orchestration and event handling
 │   ├── matcher.py              # Phonetic + fuzzy name matching engine
 │   ├── config_loader.py        # Azure App Configuration reader
 │   ├── graph_client.py         # Microsoft Graph API — AD group member lookup
-│   ├── call_handler.py         # ACS call control helpers
+│   ├── host.json               # Azure Functions host configuration
 │   └── requirements.txt        # Python dependencies
 ├── scripts/
 │   ├── Deploy-Infrastructure.ps1   # Full infrastructure deployment
@@ -93,7 +94,7 @@ Callers speak a staff member's name → Azure AI Speech transcribes it → phone
 Push to `main` branch — GitHub Actions handles deployment automatically.
 Or run manually:
 ```powershell
-.\scripts\Deploy-BotCode.ps1 -FunctionAppName "contoso-receptionist"
+.\scripts\Deploy-BotCode.ps1 -FunctionAppName "contoso-receptionist" -ResourceGroup "rg-virtual-receptionist"
 ```
 
 ---
