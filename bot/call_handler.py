@@ -174,16 +174,19 @@ class CallHandler:
         call_id = data.get("callConnectionId", "")
         op_context = data.get("operationContext", "")
 
-        if not call_id:
-            logger.warning("Ignoring callback '%s' with missing callConnectionId", event_type)
-            return
-
         if event_type in (
             "Microsoft.Communication.CallTransferAccepted",
             "Microsoft.Communication.CallDisconnected",
         ):
+            if not call_id:
+                logger.warning("Ignoring callback '%s' with missing callConnectionId", event_type)
+                return
             self._pending_store.delete(call_id)
             logger.info("%s (call_id=%s)", event_type.split(".")[-1], call_id)
+            return
+
+        if not call_id:
+            logger.warning("Ignoring callback '%s' with missing callConnectionId", event_type)
             return
 
         client = self._acs()
