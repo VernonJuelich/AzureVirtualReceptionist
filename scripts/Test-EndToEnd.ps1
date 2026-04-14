@@ -114,8 +114,8 @@ Test-Step "Managed Identity enabled" {
 }
 
 # ── Test 7: App Insights connected ───────────────────────────
-Test-Step "App Insights receiving telemetry" {
-    $AiName = az monitor app-insights component list --resource-group $ResourceGroup --query "[0].name" --output tsv
+Test-Step "App Insights connected" {
+    $AiName = az resource list --resource-group $ResourceGroup --resource-type "Microsoft.Insights/components" --query "[0].name" --output tsv
     if (-not $AiName) { throw "No App Insights found in $ResourceGroup" }
     # Just checks it exists — live telemetry requires an actual call
 }

@@ -3,55 +3,9 @@
     Deploys the full Azure Virtual Receptionist infrastructure.
 
 .DESCRIPTION
-    Creates all required Azure resources in dependency order:
-      1.  Resource Group
-      2.  Azure Communication Services
-      3.  Azure Key Vault
-      4.  Azure App Configuration
-      5.  Storage Account (required by Function App)
-      6.  Application Insights
-      7.  Azure Function App (Python 3.11 / Consumption)
-      8.  AD App Registration + API permissions
-      9.  AD Security Group (staff directory)
-      10. Key Vault secrets
-      11. Role assignments (Key Vault + App Config -> Function App MI)
-      12. App Configuration seed values
-
-    Fixes applied:
-      [Issue 10] Client secret is now written to a temporary file and passed
-                 via --file flag to avoid the secret appearing in shell history
-                 or process listings. The temp file is deleted immediately.
-      [Issue 11] Deployment summary JSON is saved outside the repo directory
-                 (to $env:TEMP) to prevent accidental git commits. A .gitignore
-                 entry is also written to the repo root for belt-and-suspenders.
-
-.PARAMETER TenantId
-    Azure AD Tenant ID.
-
-.PARAMETER SubscriptionId
-    Azure Subscription ID.
-
-.PARAMETER ResourceGroup
-    Resource group name. Created if not exists.
-
-.PARAMETER Location
-    Azure region. Example: australiaeast, uksouth, eastus
-
-.PARAMETER OrgPrefix
-    Short prefix for resource names. Example: gennet
-    Must be lowercase letters and numbers only, max 12 chars.
-
-.PARAMETER AcsDataLocation
-    ACS data residency location. Default: Australia
-    Options: Australia, UnitedStates, Europe, UnitedKingdom, Asia
-
-.EXAMPLE
-    .\Deploy-Infrastructure.ps1 `
-        -TenantId       "xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx" `
-        -SubscriptionId "yyyyyyyy-yyyy-yyyy-yyyy-yyyyyyyyyyyy" `
-        -ResourceGroup  "rg-virtual-receptionist" `
-        -Location       "australiaeast" `
-        -OrgPrefix      "gennet"
+    Creates all required Azure resources in dependency order, including an
+    Azure AI Services account so ACS speech recognition has a valid
+    cognitive_services_endpoint.
 #>
 
 [CmdletBinding(SupportsShouldProcess)]
@@ -70,7 +24,6 @@ param(
 Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
 
-# ── Derived resource names ─────────────────────────────────────────
 $StorageSuffix   = "fnstore"
 $StorageRaw      = ($OrgPrefix -replace '[^a-z0-9]','') + $StorageSuffix
 $StorageAcctName = $StorageRaw.Substring(0, [Math]::Min($StorageRaw.Length, 24))
@@ -80,6 +33,7 @@ $KvName          = "$OrgPrefix-receptionist-kv"
 $AppConfigName   = "$OrgPrefix-receptionist-config"
 $FunctionAppName = "$OrgPrefix-receptionist"
 $AppInsightsName = "$OrgPrefix-receptionist-ai"
+$AiServicesName  = "$OrgPrefix-aiservices"
 $AppRegName      = "VirtualReceptionist-$OrgPrefix"
 $GroupName       = "VirtualReceptionist-Staff-$OrgPrefix"
 
@@ -92,19 +46,14 @@ Write-Host "Org Prefix:      $OrgPrefix"
 Write-Host "Storage Account: $StorageAcctName"
 Write-Host "ACS Data Loc:    $AcsDataLocation`n"
 
-# ── Login ──────────────────────────────────────────────────────────
-Write-Host "[1/12] Logging in to Azure..." -ForegroundColor Yellow
+Write-Host "[1/13] Logging in to Azure..." -ForegroundColor Yellow
 az login --tenant $TenantId --output none
 az account set --subscription $SubscriptionId
 
-# ── Resource Group ─────────────────────────────────────────────────
-Write-Host "[2/12] Creating resource group '$ResourceGroup'..." -ForegroundColor Yellow
+Write-Host "[2/13] Creating resource group '$ResourceGroup'..." -ForegroundColor Yellow
 az group create --name $ResourceGroup --location $Location --output none
 
-# ── ACS ────────────────────────────────────────────────────────────
-# NOTE: ACS resource type only accepts 'global' as --location.
-# Data residency is controlled separately via --data-location.
-Write-Host "[3/12] Creating ACS resource '$AcsName'..." -ForegroundColor Yellow
+Write-Host "[3/13] Creating ACS resource '$AcsName'..." -ForegroundColor Yellow
 az communication create `
     --name           $AcsName `
     --resource-group $ResourceGroup `
@@ -124,10 +73,7 @@ $AcsResourceId = az communication show `
     --query          "id" `
     --output         tsv
 
-Write-Host "    ACS Resource ID: $AcsResourceId" -ForegroundColor DarkGray
-
-# ── Key Vault ──────────────────────────────────────────────────────
-Write-Host "[4/12] Creating Key Vault '$KvName'..." -ForegroundColor Yellow
+Write-Host "[4/13] Creating Key Vault '$KvName'..." -ForegroundColor Yellow
 az keyvault create `
     --name           $KvName `
     --resource-group $ResourceGroup `
@@ -135,8 +81,7 @@ az keyvault create `
     --sku            standard `
     --output         none
 
-# ── App Configuration ──────────────────────────────────────────────
-Write-Host "[5/12] Creating App Configuration '$AppConfigName'..." -ForegroundColor Yellow
+Write-Host "[5/13] Creating App Configuration '$AppConfigName'..." -ForegroundColor Yellow
 az appconfig create `
     --name           $AppConfigName `
     --resource-group $ResourceGroup `
@@ -150,8 +95,24 @@ $AppConfigEndpoint = az appconfig show `
     --query          "endpoint" `
     --output         tsv
 
-# ── Storage Account ────────────────────────────────────────────────
-Write-Host "[6/12] Creating storage account '$StorageAcctName'..." -ForegroundColor Yellow
+Write-Host "[6/13] Creating Azure AI Services account '$AiServicesName'..." -ForegroundColor Yellow
+az cognitiveservices account create `
+    --name           $AiServicesName `
+    --resource-group $ResourceGroup `
+    --kind           AIServices `
+    --sku            S0 `
+    --location       $Location `
+    --custom-domain  $AiServicesName `
+    --yes `
+    --output         none
+
+$CognitiveServicesEndpoint = az cognitiveservices account show `
+    --name           $AiServicesName `
+    --resource-group $ResourceGroup `
+    --query          "properties.endpoint" `
+    --output         tsv
+
+Write-Host "[7/13] Creating storage account '$StorageAcctName'..." -ForegroundColor Yellow
 az storage account create `
     --name           $StorageAcctName `
     --resource-group $ResourceGroup `
@@ -159,8 +120,7 @@ az storage account create `
     --sku            Standard_LRS `
     --output         none
 
-# ── Application Insights ───────────────────────────────────────────
-Write-Host "[7/12] Creating Application Insights '$AppInsightsName'..." -ForegroundColor Yellow
+Write-Host "[8/13] Creating Application Insights '$AppInsightsName'..." -ForegroundColor Yellow
 az monitor app-insights component create `
     --app            $AppInsightsName `
     --resource-group $ResourceGroup `
@@ -174,8 +134,7 @@ $AiConnString = az monitor app-insights component show `
     --query          "connectionString" `
     --output         tsv
 
-# ── Function App ───────────────────────────────────────────────────
-Write-Host "[8/12] Creating Function App '$FunctionAppName'..." -ForegroundColor Yellow
+Write-Host "[9/13] Creating Function App '$FunctionAppName'..." -ForegroundColor Yellow
 az functionapp create `
     --name                      $FunctionAppName `
     --resource-group            $ResourceGroup `
@@ -187,7 +146,6 @@ az functionapp create `
     --os-type                   linux `
     --output                    none
 
-# Enable Managed Identity
 az functionapp identity assign `
     --name           $FunctionAppName `
     --resource-group $ResourceGroup `
@@ -199,7 +157,6 @@ $FunctionPrincipalId = az functionapp identity show `
     --query          "principalId" `
     --output         tsv
 
-# Set Application Settings (non-secret values only)
 az functionapp config appsettings set `
     --name           $FunctionAppName `
     --resource-group $ResourceGroup `
@@ -210,9 +167,7 @@ az functionapp config appsettings set `
         "FUNCTIONS_WORKER_RUNTIME=python" `
     --output none
 
-# ── App Registration ───────────────────────────────────────────────
-Write-Host "[9/12] Creating App Registration '$AppRegName'..." -ForegroundColor Yellow
-
+Write-Host "[10/13] Creating App Registration '$AppRegName'..." -ForegroundColor Yellow
 $AppRegJson  = az ad app create `
     --display-name      $AppRegName `
     --sign-in-audience  AzureADMyOrg `
@@ -220,20 +175,14 @@ $AppRegJson  = az ad app create `
 
 $AppClientId = $AppRegJson.appId
 $AppObjectId = $AppRegJson.id
-
-# Create service principal
 az ad sp create --id $AppClientId --output none
 
-# Add Graph API permissions (Application type)
 $GraphApi = "00000003-0000-0000-c000-000000000000"
 $Perms = @(
-    "bc024368-1153-4739-b217-4326f2e966d0",  # GroupMember.Read.All
+    "5b567255-7703-4780-807c-7be8301ae99b",  # Group.Read.All
     "df021288-bdef-4463-88db-98f22de89214",  # User.Read.All
-    "284383ee-7f6e-4e40-a2a8-e85dcb029101",  # Calls.Initiate.All
-    "f6b49018-60ab-4f12-bec5-6d2120a4f3f1",  # Calls.JoinGroupCall.All
-    "9c7a330d-35b3-4aa1-963d-cb2b9f927841"   # Presence.Read.All
+    "284383ee-7f6e-4e40-a2a8-e85dcb029101"   # Calls.Initiate.All
 )
-
 foreach ($p in $Perms) {
     az ad app permission add `
         --id              $AppObjectId `
@@ -242,33 +191,21 @@ foreach ($p in $Perms) {
         --output          none
 }
 
-# Create client secret (2 year expiry)
 $SecretJson   = az ad app credential reset `
     --id     $AppObjectId `
     --years  2 `
     --output json | ConvertFrom-Json
-
 $ClientSecret = $SecretJson.password
 $SecretExpiry = (Get-Date).AddYears(2).ToString("yyyy-MM-dd")
 
-Write-Host "    Client secret expires: $SecretExpiry" -ForegroundColor DarkYellow
-Write-Host "    *** ADD A CALENDAR REMINDER 4 WEEKS BEFORE THIS DATE ***" -ForegroundColor Red
-
-# ── AD Security Group ──────────────────────────────────────────────
-Write-Host "[10/12] Creating AD Security Group '$GroupName'..." -ForegroundColor Yellow
-
+Write-Host "[11/13] Creating AD Security Group '$GroupName'..." -ForegroundColor Yellow
 $GroupJson    = az ad group create `
     --display-name  $GroupName `
     --mail-nickname ($GroupName -replace '\s','-') `
     --output        json | ConvertFrom-Json
-
 $StaffGroupId = $GroupJson.id
 
-# ── Key Vault secrets ──────────────────────────────────────────────
-Write-Host "[11/12] Storing secrets in Key Vault and assigning roles..." -ForegroundColor Yellow
-
-# Grant the CLI caller 'Key Vault Secrets Officer' so it can write secrets.
-# This is needed because the vault uses RBAC (not access policies).
+Write-Host "[12/13] Storing secrets in Key Vault and assigning roles..." -ForegroundColor Yellow
 $CallerObjectId = az ad signed-in-user show --query id --output tsv
 $KvScopeEarly = az keyvault show `
     --name           $KvName `
@@ -283,22 +220,14 @@ az role assignment create `
     --scope                   $KvScopeEarly `
     --output                  none
 
-Write-Host "    Waiting 15s for RBAC to propagate..." -ForegroundColor DarkGray
 Start-Sleep -Seconds 15
 
-# [Issue 10] Write each secret to a temp file and use --file to prevent the
-# secret value appearing in shell history or process listings. Temp files are
-# deleted immediately after each az keyvault secret set call.
 function Set-KeyVaultSecretFromValue {
     param([string]$VaultName, [string]$SecretName, [string]$SecretValue)
     $TempFile = [System.IO.Path]::GetTempFileName()
     try {
         [System.IO.File]::WriteAllText($TempFile, $SecretValue)
-        az keyvault secret set `
-            --vault-name $VaultName `
-            --name       $SecretName `
-            --file       $TempFile `
-            --output     none
+        az keyvault secret set --vault-name $VaultName --name $SecretName --file $TempFile --output none
     }
     finally {
         Remove-Item -Path $TempFile -Force -ErrorAction SilentlyContinue
@@ -308,110 +237,32 @@ function Set-KeyVaultSecretFromValue {
 Set-KeyVaultSecretFromValue -VaultName $KvName -SecretName "acs-connection-string" -SecretValue $AcsConnString
 Set-KeyVaultSecretFromValue -VaultName $KvName -SecretName "app-client-id"         -SecretValue $AppClientId
 Set-KeyVaultSecretFromValue -VaultName $KvName -SecretName "app-client-secret"     -SecretValue $ClientSecret
-
-# Clear the secret from memory as soon as it is stored
 $ClientSecret = $null
 
-# Role: Function App MI -> Key Vault Secrets User
-$KvScope = az keyvault show `
-    --name           $KvName `
-    --resource-group $ResourceGroup `
-    --query          "id" `
-    --output         tsv
+$KvScope = az keyvault show --name $KvName --resource-group $ResourceGroup --query "id" --output tsv
+az role assignment create --role "Key Vault Secrets User" --assignee-object-id $FunctionPrincipalId --assignee-principal-type ServicePrincipal --scope $KvScope --output none
 
-az role assignment create `
-    --role                    "Key Vault Secrets User" `
-    --assignee-object-id      $FunctionPrincipalId `
-    --assignee-principal-type ServicePrincipal `
-    --scope                   $KvScope `
-    --output                  none
+$AppConfigScope = az appconfig show --name $AppConfigName --resource-group $ResourceGroup --query "id" --output tsv
+az role assignment create --role "App Configuration Data Reader" --assignee-object-id $FunctionPrincipalId --assignee-principal-type ServicePrincipal --scope $AppConfigScope --output none
 
-# Role: Function App MI -> App Configuration Data Reader
-$AppConfigScope = az appconfig show `
-    --name           $AppConfigName `
-    --resource-group $ResourceGroup `
-    --query          "id" `
-    --output         tsv
-
-az role assignment create `
-    --role                    "App Configuration Data Reader" `
-    --assignee-object-id      $FunctionPrincipalId `
-    --assignee-principal-type ServicePrincipal `
-    --scope                   $AppConfigScope `
-    --output                  none
-
-# ── Seed App Configuration ─────────────────────────────────────────
-Write-Host "[12/12] Seeding App Configuration..." -ForegroundColor Yellow
-
+Write-Host "[13/13] Seeding App Configuration..." -ForegroundColor Yellow
 & "$PSScriptRoot\Set-AppConfiguration.ps1" `
     -AppConfigName $AppConfigName `
     -ConfigFile    "$PSScriptRoot\..\config\appconfig-seed.json"
 
-# ── Ensure deployment summary cannot be committed accidentally ─────
-# [Issue 11] Add .gitignore entry and save summary outside repo.
-$RepoRoot   = Resolve-Path "$PSScriptRoot\.."
-$GitIgnore  = Join-Path $RepoRoot ".gitignore"
-$IgnoreLine = "deployment-summary-*.json"
+az appconfig kv set --name $AppConfigName --key "receptionist:tenant_id" --value $TenantId --yes --output none
+az appconfig kv set --name $AppConfigName --key "receptionist:staff_group_id" --value $StaffGroupId --yes --output none
+az appconfig kv set --name $AppConfigName --key "receptionist:cognitive_services_endpoint" --value $CognitiveServicesEndpoint --yes --output none
+az appconfig kv set --name $AppConfigName --key "receptionist:acs_callback_url" --value "https://$FunctionAppName.azurewebsites.net/api/acs_callback" --yes --output none
 
-if (Test-Path $GitIgnore) {
-    $Existing = Get-Content $GitIgnore -Raw
-    if ($Existing -notmatch [regex]::Escape($IgnoreLine)) {
-        Add-Content -Path $GitIgnore -Value "`n# Deployment summaries -- contain IDs and expiry dates, never commit`n$IgnoreLine"
-        Write-Host "    Added '$IgnoreLine' to .gitignore" -ForegroundColor DarkGray
-    }
-}
-else {
-    Set-Content -Path $GitIgnore -Value "# Deployment summaries -- contain IDs and expiry dates, never commit`n$IgnoreLine"
-    Write-Host "    Created .gitignore with '$IgnoreLine'" -ForegroundColor DarkGray
-}
-
-# ── Summary ────────────────────────────────────────────────────────
 Write-Host "`n=== Deployment Complete ===" -ForegroundColor Green
-Write-Host ""
-Write-Host "Resources created:" -ForegroundColor Cyan
-Write-Host "  ACS:              $AcsName"
-Write-Host "  ACS Resource ID:  $AcsResourceId"
-Write-Host "  Key Vault:        $KvName"
-Write-Host "  App Config:       $AppConfigName"
-Write-Host "  Function App:     $FunctionAppName"
-Write-Host "  App Insights:     $AppInsightsName"
-Write-Host "  App Reg:          $AppRegName (Client ID: $AppClientId)"
-Write-Host "  Staff Group:      $GroupName (Group ID: $StaffGroupId)"
-Write-Host ""
-Write-Host "Next steps:" -ForegroundColor Yellow
-Write-Host "  1. Grant admin consent: Azure AD > App Registrations > $AppRegName > API Permissions"
-Write-Host "  2. Run: .\New-TeamsResourceAccount.ps1"
-Write-Host "  3. Update config\appconfig-seed.json with real values, re-run Set-AppConfiguration.ps1"
-Write-Host "  4. Add staff to '$GroupName' in Azure AD"
-Write-Host "  5. Add GitHub secrets (see README.md), then push to trigger deployment"
-Write-Host "  6. Run: .\Test-EndToEnd.ps1"
-Write-Host "  7. Run: .\Set-AlertRules.ps1"
-Write-Host ""
-Write-Host "SECRET EXPIRY: $SecretExpiry -- set your calendar reminder NOW" -ForegroundColor Red
-
-# [Issue 11] Save deployment summary to $env:TEMP (outside repo).
-$Summary = [ordered]@{
-    DeployedAt        = (Get-Date -Format "o")
-    OrgPrefix         = $OrgPrefix
-    TenantId          = $TenantId
-    SubscriptionId    = $SubscriptionId
-    ResourceGroup     = $ResourceGroup
-    Location          = $Location
-    AcsName           = $AcsName
-    AcsResourceId     = $AcsResourceId
-    KeyVaultName      = $KvName
-    AppConfigName     = $AppConfigName
-    AppConfigEndpoint = $AppConfigEndpoint
-    FunctionAppName   = $FunctionAppName
-    AppInsightsName   = $AppInsightsName
-    AppClientId       = $AppClientId
-    AppObjectId       = $AppObjectId
-    StaffGroupId      = $StaffGroupId
-    SecretExpiry      = $SecretExpiry
-}
-
-$SummaryFile = Join-Path $env:TEMP "deployment-summary-$OrgPrefix.json"
-$Summary | ConvertTo-Json | Out-File -FilePath $SummaryFile -Encoding utf8
-Write-Host "`nDeployment summary saved to: $SummaryFile" -ForegroundColor DarkGray
-Write-Host "(Saved outside repo to prevent accidental git commit)" -ForegroundColor DarkGray
-Write-Host "Keep this file -- you will need the values for subsequent scripts." -ForegroundColor DarkGray
+Write-Host "  ACS:                 $AcsName"
+Write-Host "  Key Vault:           $KvName"
+Write-Host "  App Config:          $AppConfigName"
+Write-Host "  Azure AI Services:   $AiServicesName"
+Write-Host "  AI Endpoint:         $CognitiveServicesEndpoint"
+Write-Host "  Function App:        $FunctionAppName"
+Write-Host "  App Insights:        $AppInsightsName"
+Write-Host "  App Reg Client ID:   $AppClientId"
+Write-Host "  Staff Group ID:      $StaffGroupId"
+Write-Host "  Secret Expiry:       $SecretExpiry"
