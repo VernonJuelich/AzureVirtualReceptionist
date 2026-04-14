@@ -1,6 +1,3 @@
-# Upper version bounds added (Issues 9, 15) to prevent silent breaking changes
-# from major SDK releases. azure-data-tables added for cross-instance pending
-# transfer state (Issue 1 fix in call_handler.py).
 azure-functions>=1.18.0,<2.0.0
 azure-communication-callautomation>=1.1.0,<2.0.0
 azure-identity>=1.15.0,<2.0.0

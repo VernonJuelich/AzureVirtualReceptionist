@@ -5,17 +5,10 @@ Loads Azure AD Security Group members for the staff directory.
 Reads extensionAttribute1 as TTS pronunciation override.
 
 Fixes applied:
-  - [Issue 3]  Added explicit documentation that the in-memory cache is
-                per-Function-App-instance, not shared across scale-out instances.
-                Operators should not assume cross-instance cache consistency.
-  - [Issue 14] Added a comment clarifying that @odata.type in the $select list
-                controls what the API returns; the SDK maps it to odata_type
-                (underscored). Added a defensive fallback for SDK versions where
-                the attribute may not be populated, to avoid silently including
-                non-user members.
-  - Added pagination for groups with >999 members
-  - Added object type filtering (users only — groups can contain other types)
-  - Stale cache fallback is preserved but "unavailable" is now distinguishable
+  - Pagination rewritten to use direct HTTP next-link fetching via the
+    Graph request adapter, avoiding potential .with_url() SDK compatibility issues
+  - Object type filtering preserved (users only)
+  - Stale cache fallback preserved
   - Cache TTL: 5 minutes
 """
 
@@ -25,18 +18,13 @@ from dataclasses import dataclass
 
 from azure.identity import ClientSecretCredential
 from msgraph import GraphServiceClient
+from msgraph.generated.models.user import User
 
 logger = logging.getLogger(__name__)
 
-# NOTE [Issue 3]: This cache is in-process (per Function App instance).
-# On a Consumption plan, Azure Functions may run multiple warm instances
-# simultaneously. Each instance holds its own independent cache and will
-# make its own Graph API call on the first request after a cold start or
-# after the TTL expires. This is expected behaviour — Graph API calls are
-# fast and infrequent. Do NOT assume this cache is shared across instances.
 _cache_members: list = []
 _cache_timestamp: float = 0.0
-_cache_available: bool = True   # False when last fetch failed
+_cache_available: bool = True
 CACHE_TTL = 300  # 5 minutes
 
 
@@ -85,33 +73,16 @@ async def get_staff_members(
     Raises DirectoryUnavailableError if fetch fails and no cache exists.
 
     extensionAttribute1 on each user = TTS pronunciation override.
-    Set in Azure AD: Users > select user > Edit > extensionAttribute1
-    Examples:
-      Hanson   → "HAN-son"
-      Nguyen   → "win"
-      Siobhan  → "ʃɪˈvɔːn"   (IPA)
-
-    NOTE [Issue 14]: The $select query requests "@odata.type" so the Graph API
-    includes the member object type in the response. The msgraph-sdk maps this
-    field to the Python attribute `odata_type` (with underscores). The SDK may
-    not populate `odata_type` on all SDK versions — the fallback logic below
-    checks for an empty/missing attribute and skips the type filter in that case,
-    relying instead on the presence of required user-specific fields (id,
-    displayName) as a secondary guard. Test with a group that contains nested
-    groups or devices to verify filtering behaviour on your SDK version.
     """
     global _cache_members, _cache_timestamp, _cache_available
 
     now = time.time()
     if _cache_members and (now - _cache_timestamp) < CACHE_TTL:
         logger.info(
-            "Returning cached staff directory (%d members)",
-            len(_cache_members))
+            "Returning cached staff directory (%d members)", len(_cache_members))
         return _cache_members
 
-    logger.info(
-        "Fetching group members from Graph API (group=%s)...",
-        group_id)
+    logger.info("Fetching group members from Graph API (group=%s)...", group_id)
 
     try:
         credential = ClientSecretCredential(
@@ -121,45 +92,38 @@ async def get_staff_members(
         )
         graph = GraphServiceClient(credential)
         members = []
-        page = await graph.groups.by_group_id(group_id).members.get(
+
+        # Fetch first page
+        response = await graph.groups.by_group_id(group_id).members.get(
             request_configuration={
                 "query_parameters": {
-                    # "@odata.type" in $select causes Graph to include the type
-                    # discriminator. The SDK exposes this as obj.odata_type.
-                    "$select": "id,displayName,givenName,surname,onPremisesExtensionAttributes,@odata.type",
+                    "$select": "id,displayName,givenName,surname,onPremisesExtensionAttributes",
                     "$top": 999,
                 }
             }
         )
 
-        while page:
-            if page.value:
-                for obj in page.value:
-                    # [Issue 14] Filter to user objects only.
-                    # odata_type may be None/empty on some SDK versions — in
-                    # that case we skip the type check and rely on field presence.
-                    odata_type = getattr(obj, "odata_type", "") or ""
-                    if odata_type and "#microsoft.graph.user" not in odata_type.lower():
+        while response:
+            if response.value:
+                for obj in response.value:
+                    # Only include User objects — groups can contain devices, other groups, etc.
+                    # msgraph-sdk v1.x: User objects are instances of msgraph.generated.models.user.User
+                    if not isinstance(obj, User):
                         logger.debug(
-                            "Skipping non-user member (type=%s)", odata_type)
+                            "Skipping non-user member (type=%s)", type(obj).__name__)
                         continue
 
                     aad_id = getattr(obj, "id", "") or ""
                     display_name = getattr(obj, "display_name", "") or ""
 
-                    # Secondary guard: if odata_type was not available, skip
-                    # objects that lack the user-specific fields we need.
                     if not aad_id or not display_name:
-                        logger.debug(
-                            "Skipping member with missing id or displayName (odata_type='%s')",
-                            odata_type)
+                        logger.debug("Skipping member with missing id or displayName")
                         continue
 
                     pronunciation = ""
                     ext = getattr(obj, "on_premises_extension_attributes", None)
                     if ext:
-                        pronunciation = getattr(
-                            ext, "extension_attribute1", "") or ""
+                        pronunciation = getattr(ext, "extension_attribute1", "") or ""
 
                     members.append(StaffMember(
                         aad_id=aad_id,
@@ -169,11 +133,25 @@ async def get_staff_members(
                         pronunciation_override=pronunciation.strip(),
                     ))
 
-            # Handle pagination — Graph returns nextLink for large groups
-            next_link = getattr(page, "odata_next_link", None)
+            # Handle pagination — Graph returns odata_next_link for large groups
+            next_link = getattr(response, "odata_next_link", None)
             if next_link:
-                logger.info("Graph paging — fetching next page...")
-                page = await graph.groups.by_group_id(group_id).members.with_url(next_link).get()
+                logger.info("Graph paging — fetching next page (%d so far)...", len(members))
+                # Use the request adapter directly to follow the next link.
+                # This avoids SDK version-specific .with_url() compatibility concerns.
+                from kiota_abstractions.request_information import RequestInformation
+                from kiota_abstractions.method import Method
+                from msgraph.generated.models.directory_object_collection_response import (
+                    DirectoryObjectCollectionResponse,
+                )
+                request_info = RequestInformation()
+                request_info.http_method = Method.GET
+                request_info.url = next_link
+                response = await graph.request_adapter.send_async(
+                    request_info,
+                    DirectoryObjectCollectionResponse,
+                    None,
+                )
             else:
                 break
 
