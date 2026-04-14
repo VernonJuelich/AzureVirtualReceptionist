@@ -16,7 +16,7 @@ from call_handler import CallHandler
 from config_loader import ConfigLoader
 
 logger = logging.getLogger(__name__)
-app = func.FunctionApp(http_auth_level=func.AuthLevel.FUNCTION)
+app = func.FunctionApp(http_auth_level=func.AuthLevel.ANONYMOUS)
 
 # Module-level singletons — reused across warm instances
 _config: ConfigLoader = None
