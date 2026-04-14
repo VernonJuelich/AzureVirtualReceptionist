@@ -4,8 +4,8 @@ on:
   push:
     branches: [ main ]
     paths:
-      - 'bot/**'         # Only trigger when bot code changes
-  workflow_dispatch:     # Allow manual trigger from GitHub Actions UI
+      - 'bot/**'
+  workflow_dispatch:
 
 env:
   PYTHON_VERSION: '3.11'
@@ -53,14 +53,15 @@ jobs:
         with:
           python-version: ${{ env.PYTHON_VERSION }}
 
-      - name: Install Azure Functions Core Tools
-        run: npm install -g azure-functions-core-tools@4 --unsafe-perm true
-
-      - name: Resolve bot dependencies into package folder
+      - name: Install dependencies into package folder
         run: |
           pushd bot
           pip install -r requirements.txt \
-            --target=".python_packages/lib/site-packages"
+            --target=".python_packages/lib/site-packages" \
+            --platform=manylinux2014_x86_64 \
+            --python-version=3.11 \
+            --implementation=cp \
+            --only-binary=:all:
           popd
 
       - name: Login to Azure
@@ -68,21 +69,24 @@ jobs:
         with:
           creds: ${{ secrets.AZURE_CREDENTIALS }}
 
+      - name: Set WEBSITE_RUN_FROM_PACKAGE
+        run: |
+          az functionapp config appsettings set \
+            --name "${{ secrets.FUNCTION_APP_NAME }}" \
+            --resource-group "${{ secrets.AZURE_RESOURCE_GROUP }}" \
+            --settings "WEBSITE_RUN_FROM_PACKAGE=1" \
+            --output none
+
       - name: Deploy bot to Azure Function App
         uses: Azure/functions-action@v1
         with:
-          app-name:                    ${{ secrets.FUNCTION_APP_NAME }}
-          package:                     './bot'
-          scm-do-build-during-deployment: true
-          enable-oryx-build:           true
+          app-name:                       ${{ secrets.FUNCTION_APP_NAME }}
+          package:                        './bot'
+          scm-do-build-during-deployment: false
+          enable-oryx-build:              false
 
-      # [Issue 8] Consumption plan cold starts can take 60-90 seconds when
-      # loading heavy dependencies (msgraph-sdk, azure-identity, etc.).
-      # The previous 30s wait was consistently too short. We now wait 60s
-      # and then retry the health check up to 5 times with 15s gaps, giving
-      # the function up to ~2.5 minutes total to become healthy before failing.
-      - name: Wait for Function App cold start
-        run: sleep 60
+      - name: Wait for Function App restart
+        run: sleep 45
 
       - name: Health check (with retry)
         run: |
@@ -115,22 +119,18 @@ jobs:
           echo "Health check failed after $MAX_ATTEMPTS attempts"
           exit 1
 
-      # Teams notification via Power Automate HTTP trigger
-      # (Office 365 Connectors are deprecated — use a Power Automate flow instead)
-      # Set up: Power Automate > Create > Instant cloud flow > When an HTTP request is received
-      # Paste the flow URL into the TEAMS_WEBHOOK_URL secret
       - name: Notify Teams — success
         if: success()
         run: |
           curl -s -o /dev/null -X POST "${{ secrets.TEAMS_WEBHOOK_URL }}" \
             -H "Content-Type: application/json" \
             -d '{
-              "status":      "success",
-              "app":         "${{ secrets.FUNCTION_APP_NAME }}",
-              "branch":      "${{ github.ref_name }}",
-              "commit":      "${{ github.sha }}",
-              "actor":       "${{ github.actor }}",
-              "message":     "Virtual Receptionist deployed successfully"
+              "status":  "success",
+              "app":     "${{ secrets.FUNCTION_APP_NAME }}",
+              "branch":  "${{ github.ref_name }}",
+              "commit":  "${{ github.sha }}",
+              "actor":   "${{ github.actor }}",
+              "message": "Virtual Receptionist deployed successfully"
             }' || true
 
       - name: Notify Teams — failure
@@ -139,10 +139,10 @@ jobs:
           curl -s -o /dev/null -X POST "${{ secrets.TEAMS_WEBHOOK_URL }}" \
             -H "Content-Type: application/json" \
             -d '{
-              "status":      "failure",
-              "app":         "${{ secrets.FUNCTION_APP_NAME }}",
-              "branch":      "${{ github.ref_name }}",
-              "commit":      "${{ github.sha }}",
-              "actor":       "${{ github.actor }}",
-              "message":     "Virtual Receptionist deployment FAILED - check GitHub Actions logs"
+              "status":  "failure",
+              "app":     "${{ secrets.FUNCTION_APP_NAME }}",
+              "branch":  "${{ github.ref_name }}",
+              "commit":  "${{ github.sha }}",
+              "actor":   "${{ github.actor }}",
+              "message": "Virtual Receptionist deployment FAILED - check GitHub Actions logs"
             }' || true
