@@ -163,11 +163,10 @@ async def health(req: func.HttpRequest) -> func.HttpResponse:
     Returns minimal status confirmation.
     """
     try:
-        cfg = _get_handler().config
+        _get_handler()
         return func.HttpResponse(
             json.dumps({
                 "status": "ok",
-                "company": cfg.get("receptionist:company_name"),
             }),
             mimetype="application/json",
             status_code=200,
