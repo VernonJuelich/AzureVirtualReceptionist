@@ -4,15 +4,14 @@ function_app.py
 Azure Functions v2 Python entry point.
 
 CRITICAL DESIGN: incoming_call must return HTTP 200 to EventGrid within
-30 seconds or EventGrid will retry. ACS call handling (answer_call, play_media)
-can take 10-30 seconds. We therefore return 200 immediately and fire the
-call handling as a background task using asyncio.
+30 seconds or EventGrid will retry. ACS answer_call() is quick and only
+registers callback URLs; media actions continue via acs_callback events.
+We therefore handle incoming calls inline and still return HTTP 200 promptly.
 
 All configuration is loaded from Azure App Configuration at runtime.
 Secrets are loaded from Azure Key Vault via Managed Identity.
 """
 
-import asyncio
 import json
 import logging
 import azure.functions as func
@@ -60,9 +59,9 @@ async def incoming_call(req: func.HttpRequest) -> func.HttpResponse:
     """
     ACS fires this when a call arrives at the Teams resource account.
 
-    IMPORTANT: Returns 200 immediately to EventGrid, then processes the
-    call in the background. This prevents EventGrid from timing out and
-    retrying the event.
+    IMPORTANT: Handles incoming call events inline (no fire-and-forget task).
+    answer_call() returns quickly and subsequent media actions are processed
+    asynchronously via acs_callback events.
     """
     try:
         body = req.get_json()
@@ -94,27 +93,14 @@ async def incoming_call(req: func.HttpRequest) -> func.HttpResponse:
                 )
 
             if event_type == "Microsoft.Communication.IncomingCall":
-                # Fire and forget — return 200 immediately to EventGrid
-                # The call handling runs in the background
-                asyncio.ensure_future(_handle_incoming_background(event["data"]))
+                handler = _get_handler()
+                await handler.handle_incoming(event["data"])
 
         return func.HttpResponse("OK", status_code=200)
 
     except Exception as exc:
         logger.exception("incoming_call unhandled error: %s", exc)
         return func.HttpResponse("OK", status_code=200)
-
-
-async def _handle_incoming_background(data: dict):
-    """
-    Handles the incoming call in the background after returning 200 to EventGrid.
-    """
-    try:
-        handler = _get_handler()
-        await handler.handle_incoming(data)
-    except Exception as exc:
-        logger.exception("Background call handling error: %s", exc)
-
 
 # ── Route 2: Mid-call ACS callback events ────────────────────
 
