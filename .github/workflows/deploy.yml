@@ -83,14 +83,36 @@ jobs:
       - name: Wait for Function App cold start
         run: sleep 90
 
+      - name: Retrieve function key (with retry)
+        # The keys API returns 400 Bad Request while the Functions runtime is
+        # still initialising after deployment. Retry until it succeeds.
+        run: |
+          MAX_ATTEMPTS=10
+          ATTEMPT=1
+          while [ $ATTEMPT -le $MAX_ATTEMPTS ]; do
+            echo "Key fetch attempt $ATTEMPT of $MAX_ATTEMPTS..."
+            FUNCTION_KEY=$(az functionapp keys list \
+              --name            "${{ secrets.FUNCTION_APP_NAME }}" \
+              --resource-group  "${{ secrets.AZURE_RESOURCE_GROUP }}" \
+              --query           "functionKeys.default" \
+              --output          tsv 2>/dev/null) && \
+            [ -n "$FUNCTION_KEY" ] && break
+            echo "Key not available yet — waiting 15s..."
+            sleep 15
+            ATTEMPT=$((ATTEMPT + 1))
+          done
+
+          if [ -z "$FUNCTION_KEY" ]; then
+            echo "Failed to retrieve function key after $MAX_ATTEMPTS attempts"
+            exit 1
+          fi
+
+          echo "Function key retrieved."
+          # Write to $GITHUB_ENV so the next step can read it
+          echo "FUNCTION_KEY=$FUNCTION_KEY" >> "$GITHUB_ENV"
+
       - name: Health check (with retry)
         run: |
-          FUNCTION_KEY=$(az functionapp keys list \
-            --name            "${{ secrets.FUNCTION_APP_NAME }}" \
-            --resource-group  "${{ secrets.AZURE_RESOURCE_GROUP }}" \
-            --query           "functionKeys.default" \
-            --output          tsv)
-
           HEALTH_URL="https://${{ secrets.FUNCTION_APP_NAME }}.azurewebsites.net/api/health?code=${FUNCTION_KEY}"
           echo "Checking: $HEALTH_URL"
 
