@@ -59,14 +59,15 @@ jobs:
           creds: ${{ secrets.AZURE_CREDENTIALS }}
 
       - name: Configure app settings for remote build
+        # WEBSITE_RUN_FROM_PACKAGE is intentionally omitted — it mounts the
+        # package read-only which prevents Oryx from writing build output.
+        # SCM_DO_BUILD_DURING_DEPLOYMENT and ENABLE_ORYX_BUILD are controlled
+        # by the functions-action inputs below; no need to duplicate here.
         run: |
           az functionapp config appsettings set \
             --name "${{ secrets.FUNCTION_APP_NAME }}" \
             --resource-group "${{ secrets.AZURE_RESOURCE_GROUP }}" \
             --settings \
-              "WEBSITE_RUN_FROM_PACKAGE=1" \
-              "SCM_DO_BUILD_DURING_DEPLOYMENT=true" \
-              "ENABLE_ORYX_BUILD=true" \
               "BUILD_FLAGS=UseExpressBuild" \
               "XDG_CACHE_HOME=/tmp/.cache" \
             --output none
