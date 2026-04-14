@@ -84,21 +84,45 @@ jobs:
         run: sleep 90
 
       - name: Retrieve function key (with retry)
-        # The keys API returns 400 Bad Request while the Functions runtime is
-        # still initialising after deployment. Retry until it succeeds.
+        # Uses the Kudu/SCM API to retrieve the default host key — this is
+        # more reliable than `az functionapp keys list` which requires the
+        # Functions runtime to be fully initialised and can return 400/404
+        # for several minutes after a fresh deployment.
         run: |
+          # Get the publish credentials (username/password) for Kudu basic auth
+          CREDS=$(az functionapp deployment list-publishing-credentials \
+            --name            "${{ secrets.FUNCTION_APP_NAME }}" \
+            --resource-group  "${{ secrets.AZURE_RESOURCE_GROUP }}" \
+            --query           "{u:publishingUserName, p:publishingPassword}" \
+            --output          json)
+
+          KUDU_USER=$(echo "$CREDS" | python3 -c "import sys,json; d=json.load(sys.stdin); print(d['u'])")
+          KUDU_PASS=$(echo "$CREDS" | python3 -c "import sys,json; d=json.load(sys.stdin); print(d['p'])")
+
+          KUDU_URL="https://${{ secrets.FUNCTION_APP_NAME }}.scm.azurewebsites.net/api/functions/admin/masterkey"
+
           MAX_ATTEMPTS=10
           ATTEMPT=1
           while [ $ATTEMPT -le $MAX_ATTEMPTS ]; do
             echo "Key fetch attempt $ATTEMPT of $MAX_ATTEMPTS..."
-            FUNCTION_KEY=$(az functionapp keys list \
-              --name            "${{ secrets.FUNCTION_APP_NAME }}" \
-              --resource-group  "${{ secrets.AZURE_RESOURCE_GROUP }}" \
-              --query           "functionKeys.default" \
-              --output          tsv 2>/dev/null) && \
-            [ -n "$FUNCTION_KEY" ] && break
-            echo "Key not available yet — waiting 15s..."
-            sleep 15
+            RESPONSE=$(curl -s -w "\n%{http_code}" --max-time 20 \
+              -u "$KUDU_USER:$KUDU_PASS" \
+              "$KUDU_URL")
+            HTTP_CODE=$(echo "$RESPONSE" | tail -1)
+            BODY=$(echo "$RESPONSE" | head -1)
+            echo "  HTTP $HTTP_CODE"
+
+            if [ "$HTTP_CODE" = "200" ]; then
+              FUNCTION_KEY=$(echo "$BODY" | python3 -c "import sys,json; print(json.load(sys.stdin)['masterKey'])")
+              if [ -n "$FUNCTION_KEY" ]; then
+                echo "Function key retrieved."
+                echo "FUNCTION_KEY=$FUNCTION_KEY" >> "$GITHUB_ENV"
+                break
+              fi
+            fi
+
+            echo "  Not ready yet — waiting 20s..."
+            sleep 20
             ATTEMPT=$((ATTEMPT + 1))
           done
 
@@ -106,10 +130,6 @@ jobs:
             echo "Failed to retrieve function key after $MAX_ATTEMPTS attempts"
             exit 1
           fi
-
-          echo "Function key retrieved."
-          # Write to $GITHUB_ENV so the next step can read it
-          echo "FUNCTION_KEY=$FUNCTION_KEY" >> "$GITHUB_ENV"
 
       - name: Health check (with retry)
         run: |
