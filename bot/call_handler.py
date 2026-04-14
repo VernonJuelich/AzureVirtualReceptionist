@@ -82,7 +82,15 @@ class CallHandler:
         try:
             sh, sm = map(int, hours[0].split(":"))
             eh, em = map(int, hours[1].split(":"))
-            return dtime(sh, sm) <= now.time() <= dtime(eh, em)
+            start = dtime(sh, sm)
+            end = dtime(eh, em)
+
+            # Normal same-day window (e.g., 09:00-17:00)
+            if start <= end:
+                return start <= now.time() <= end
+
+            # Overnight window crossing midnight (e.g., 22:00-06:00)
+            return now.time() >= start or now.time() <= end
         except Exception:
             logger.warning("Failed to parse business hours for %s — treating as closed", day)
             return False
@@ -166,6 +174,30 @@ class CallHandler:
         call_id = data.get("callConnectionId", "")
         op_context = data.get("operationContext", "")
 
+        if event_type in (
+            "Microsoft.Communication.CallTransferAccepted",
+            "Microsoft.Communication.CallDisconnected",
+        ):
+            if not call_id:
+                logger.warning("Ignoring callback '%s' with missing callConnectionId", event_type)
+                return
+            self._pending_store.delete(call_id)
+            logger.info("%s (call_id=%s)", event_type.split(".")[-1], call_id)
+            return
+
+        if event_type not in (
+            "Microsoft.Communication.RecognizeCompleted",
+            "Microsoft.Communication.RecognizeFailed",
+            "Microsoft.Communication.PlayCompleted",
+            "Microsoft.Communication.CallTransferFailed",
+        ):
+            logger.info("Ignoring unsupported callback event '%s' (call_id=%s)", event_type, call_id)
+            return
+
+        if not call_id:
+            logger.warning("Ignoring callback '%s' with missing callConnectionId", event_type)
+            return
+
         client = self._acs()
         conn = client.get_call_connection(call_id)
 
@@ -175,14 +207,8 @@ class CallHandler:
             await self._on_speech_failed(conn, call_id, op_context)
         elif event_type == "Microsoft.Communication.PlayCompleted":
             await self._on_play_completed(conn, call_id, op_context)
-        elif event_type == "Microsoft.Communication.CallTransferAccepted":
-            self._pending_store.delete(call_id)
-            logger.info("Transfer accepted (call_id=%s)", call_id)
         elif event_type == "Microsoft.Communication.CallTransferFailed":
             await self._on_transfer_failed(conn, call_id, data, op_context)
-        elif event_type == "Microsoft.Communication.CallDisconnected":
-            self._pending_store.delete(call_id)
-            logger.info("Call disconnected (call_id=%s)", call_id)
 
     async def _on_play_completed(self, conn, call_id: str, op_context: str):
         logger.info("PlayCompleted: op_context=%s", op_context)

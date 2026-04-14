@@ -35,6 +35,24 @@ def _get_handler() -> CallHandler:
     return _handler
 
 
+def _parse_events(body, source: str) -> list:
+    """
+    Normalizes webhook payload into a list of event dicts.
+    Returns an empty list for invalid payloads.
+    """
+    if isinstance(body, dict):
+        return [body]
+
+    if isinstance(body, list):
+        valid_events = [event for event in body if isinstance(event, dict)]
+        if len(valid_events) != len(body):
+            logger.warning("%s: dropped %d non-dict event(s)", source, len(body) - len(valid_events))
+        return valid_events
+
+    logger.warning("%s: invalid payload type '%s' (expected dict or list)", source, type(body).__name__)
+    return []
+
+
 # ── Route 1: Incoming call webhook ───────────────────────────
 
 @app.route(route="incoming_call", methods=["POST"])
@@ -53,10 +71,9 @@ async def incoming_call(req: func.HttpRequest) -> func.HttpResponse:
         return func.HttpResponse("OK", status_code=200)
 
     try:
-        if isinstance(body, dict):
-            events = [body]
-        else:
-            events = body
+        events = _parse_events(body, "incoming_call")
+        if not events:
+            return func.HttpResponse("OK", status_code=200)
 
         event_types = [e.get("type", e.get("eventType", "unknown")) for e in events]
         logger.info(
@@ -114,10 +131,9 @@ async def acs_callback(req: func.HttpRequest) -> func.HttpResponse:
     try:
         body = req.get_json()
 
-        if isinstance(body, dict):
-            events = [body]
-        else:
-            events = body
+        events = _parse_events(body, "acs_callback")
+        if not events:
+            return func.HttpResponse("OK", status_code=200)
 
         event_types = [e.get("type", "unknown") for e in events]
         logger.info(
@@ -141,17 +157,16 @@ async def acs_callback(req: func.HttpRequest) -> func.HttpResponse:
 
 # ── Route 3: Health check ─────────────────────────────────────
 
-@app.route(route="health", methods=["GET"])
+@app.route(route="health", methods=["GET"], auth_level=func.AuthLevel.FUNCTION)
 async def health(req: func.HttpRequest) -> func.HttpResponse:
     """
     Returns minimal status confirmation.
     """
     try:
-        cfg = _get_handler().config
+        _get_handler()
         return func.HttpResponse(
             json.dumps({
                 "status": "ok",
-                "company": cfg.get("receptionist:company_name"),
             }),
             mimetype="application/json",
             status_code=200,
@@ -159,7 +174,7 @@ async def health(req: func.HttpRequest) -> func.HttpResponse:
     except Exception as exc:
         logger.error("Health check failed: %s", exc)
         return func.HttpResponse(
-            json.dumps({"status": "error", "detail": str(exc)}),
+            json.dumps({"status": "error"}),
             mimetype="application/json",
             status_code=500,
         )
