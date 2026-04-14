@@ -53,23 +53,27 @@ jobs:
         with:
           python-version: ${{ env.PYTHON_VERSION }}
 
+      - name: Install dependencies into package folder
+        run: |
+          pushd bot
+          pip install -r requirements.txt \
+            --target=".python_packages/lib/site-packages" \
+            --upgrade
+          popd
+
       - name: Login to Azure
         uses: azure/login@v2
         with:
           creds: ${{ secrets.AZURE_CREDENTIALS }}
 
-      - name: Configure app settings for remote build
-        # WEBSITE_RUN_FROM_PACKAGE is intentionally omitted — it mounts the
-        # package read-only which prevents Oryx from writing build output.
-        # SCM_DO_BUILD_DURING_DEPLOYMENT and ENABLE_ORYX_BUILD are controlled
-        # by the functions-action inputs below; no need to duplicate here.
+      - name: Configure app settings
         run: |
           az functionapp config appsettings set \
             --name "${{ secrets.FUNCTION_APP_NAME }}" \
             --resource-group "${{ secrets.AZURE_RESOURCE_GROUP }}" \
             --settings \
-              "BUILD_FLAGS=UseExpressBuild" \
-              "XDG_CACHE_HOME=/tmp/.cache" \
+              "WEBSITE_RUN_FROM_PACKAGE=0" \
+              "SCM_DO_BUILD_DURING_DEPLOYMENT=false" \
             --output none
 
       - name: Deploy bot to Azure Function App
@@ -77,19 +81,14 @@ jobs:
         with:
           app-name:                       ${{ secrets.FUNCTION_APP_NAME }}
           package:                        './bot'
-          scm-do-build-during-deployment: true
-          enable-oryx-build:              true
+          scm-do-build-during-deployment: false
+          enable-oryx-build:              false
 
       - name: Wait for Function App cold start
         run: sleep 90
 
       - name: Retrieve function key (with retry)
-        # Uses the Kudu/SCM API to retrieve the default host key — this is
-        # more reliable than `az functionapp keys list` which requires the
-        # Functions runtime to be fully initialised and can return 400/404
-        # for several minutes after a fresh deployment.
         run: |
-          # Get the publish credentials (username/password) for Kudu basic auth
           CREDS=$(az functionapp deployment list-publishing-credentials \
             --name            "${{ secrets.FUNCTION_APP_NAME }}" \
             --resource-group  "${{ secrets.AZURE_RESOURCE_GROUP }}" \
