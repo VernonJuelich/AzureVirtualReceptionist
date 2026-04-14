@@ -185,15 +185,6 @@ class CallHandler:
             logger.info("%s (call_id=%s)", event_type.split(".")[-1], call_id)
             return
 
-        if event_type not in (
-            "Microsoft.Communication.RecognizeCompleted",
-            "Microsoft.Communication.RecognizeFailed",
-            "Microsoft.Communication.PlayCompleted",
-            "Microsoft.Communication.CallTransferFailed",
-        ):
-            logger.info("Ignoring unsupported callback event '%s' (call_id=%s)", event_type, call_id)
-            return
-
         if not call_id:
             logger.warning("Ignoring callback '%s' with missing callConnectionId", event_type)
             return
