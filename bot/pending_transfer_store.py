@@ -43,7 +43,12 @@ class PendingTransferStore:
                 partition_key=self.PARTITION_KEY,
                 row_key=call_connection_id,
             )
-        except Exception:
+        except Exception as exc:
+            logger.warning(
+                "Failed to load pending transfer state for call_connection_id=%s: %s",
+                call_connection_id,
+                exc,
+            )
             return None
 
         expires_utc = entity.get("expires_utc")
@@ -74,5 +79,9 @@ class PendingTransferStore:
                 row_key=call_connection_id,
             )
             logger.info("Deleted pending transfer state for call_connection_id=%s", call_connection_id)
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.warning(
+                "Failed to delete pending transfer state for call_connection_id=%s: %s",
+                call_connection_id,
+                exc,
+            )
