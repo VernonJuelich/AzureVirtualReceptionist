@@ -3,11 +3,6 @@ function_app.py
 ===============
 Azure Functions v2 Python entry point.
 
-CRITICAL DESIGN: incoming_call must return HTTP 200 to EventGrid within
-30 seconds or EventGrid will retry. ACS answer_call() is quick and only
-registers callback URLs; media actions continue via acs_callback events.
-We therefore handle incoming calls inline and still return HTTP 200 promptly.
-
 All configuration is loaded from Azure App Configuration at runtime.
 Secrets are loaded from Azure Key Vault via Managed Identity.
 """
@@ -34,34 +29,13 @@ def _get_handler() -> CallHandler:
     return _handler
 
 
-def _parse_events(body, source: str) -> list:
-    """
-    Normalizes webhook payload into a list of event dicts.
-    Returns an empty list for invalid payloads.
-    """
-    if isinstance(body, dict):
-        return [body]
-
-    if isinstance(body, list):
-        valid_events = [event for event in body if isinstance(event, dict)]
-        if len(valid_events) != len(body):
-            logger.warning("%s: dropped %d non-dict event(s)", source, len(body) - len(valid_events))
-        return valid_events
-
-    logger.warning("%s: invalid payload type '%s' (expected dict or list)", source, type(body).__name__)
-    return []
-
-
 # ── Route 1: Incoming call webhook ───────────────────────────
 
 @app.route(route="incoming_call", methods=["POST"])
 async def incoming_call(req: func.HttpRequest) -> func.HttpResponse:
     """
     ACS fires this when a call arrives at the Teams resource account.
-
-    IMPORTANT: Handles incoming call events inline (no fire-and-forget task).
-    answer_call() returns quickly and subsequent media actions are processed
-    asynchronously via acs_callback events.
+    Handles EventGrid validation handshake and IncomingCall events.
     """
     try:
         body = req.get_json()
@@ -70,9 +44,10 @@ async def incoming_call(req: func.HttpRequest) -> func.HttpResponse:
         return func.HttpResponse("OK", status_code=200)
 
     try:
-        events = _parse_events(body, "incoming_call")
-        if not events:
-            return func.HttpResponse("OK", status_code=200)
+        if isinstance(body, dict):
+            events = [body]
+        else:
+            events = body
 
         event_types = [e.get("type", e.get("eventType", "unknown")) for e in events]
         logger.info(
@@ -102,6 +77,7 @@ async def incoming_call(req: func.HttpRequest) -> func.HttpResponse:
         logger.exception("incoming_call unhandled error: %s", exc)
         return func.HttpResponse("OK", status_code=200)
 
+
 # ── Route 2: Mid-call ACS callback events ────────────────────
 
 @app.route(route="acs_callback", methods=["POST"])
@@ -117,9 +93,10 @@ async def acs_callback(req: func.HttpRequest) -> func.HttpResponse:
     try:
         body = req.get_json()
 
-        events = _parse_events(body, "acs_callback")
-        if not events:
-            return func.HttpResponse("OK", status_code=200)
+        if isinstance(body, dict):
+            events = [body]
+        else:
+            events = body
 
         event_types = [e.get("type", "unknown") for e in events]
         logger.info(
@@ -143,16 +120,17 @@ async def acs_callback(req: func.HttpRequest) -> func.HttpResponse:
 
 # ── Route 3: Health check ─────────────────────────────────────
 
-@app.route(route="health", methods=["GET"], auth_level=func.AuthLevel.FUNCTION)
+@app.route(route="health", methods=["GET"])
 async def health(req: func.HttpRequest) -> func.HttpResponse:
     """
     Returns minimal status confirmation.
     """
     try:
-        _get_handler()
+        cfg = _get_handler().config
         return func.HttpResponse(
             json.dumps({
                 "status": "ok",
+                "company": cfg.get("receptionist:company_name"),
             }),
             mimetype="application/json",
             status_code=200,
@@ -160,7 +138,7 @@ async def health(req: func.HttpRequest) -> func.HttpResponse:
     except Exception as exc:
         logger.error("Health check failed: %s", exc)
         return func.HttpResponse(
-            json.dumps({"status": "error"}),
+            json.dumps({"status": "error", "detail": str(exc)}),
             mimetype="application/json",
             status_code=500,
         )
