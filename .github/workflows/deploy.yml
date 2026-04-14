@@ -75,17 +75,6 @@ jobs:
         with:
           creds: ${{ secrets.AZURE_CREDENTIALS }}
 
-      - name: Get publishing credentials
-        id: pubcreds
-        run: |
-          CREDS=$(az functionapp deployment list-publishing-credentials \
-            --name "${{ secrets.FUNCTION_APP_NAME }}" \
-            --resource-group "${{ secrets.AZURE_RESOURCE_GROUP }}" \
-            --query "{user:publishingUserName,pass:publishingPassword}" \
-            --output json)
-          echo "user=$(echo $CREDS | jq -r .user)" >> $GITHUB_OUTPUT
-          echo "pass=$(echo $CREDS | jq -r .pass)" >> $GITHUB_OUTPUT
-
       - name: Set WEBSITE_RUN_FROM_PACKAGE=0
         run: |
           az functionapp config appsettings set \
@@ -94,18 +83,33 @@ jobs:
             --settings "WEBSITE_RUN_FROM_PACKAGE=0" \
             --output none
 
-      - name: Deploy via Kudu zip API
+      - name: Deploy via Kudu zip API with bearer token
         run: |
+          # Get Azure bearer token for SCM access
+          TOKEN=$(az account get-access-token \
+            --resource "https://management.azure.com" \
+            --query accessToken \
+            --output tsv)
+
+          # Get SCM URI
+          SCM_URI="https://${{ secrets.FUNCTION_APP_NAME }}.scm.azurewebsites.net"
+
+          echo "Deploying to $SCM_URI"
+
           HTTP_STATUS=$(curl -s -o /tmp/deploy_response.txt -w "%{http_code}" \
             -X POST \
-            -u "${{ steps.pubcreds.outputs.user }}:${{ steps.pubcreds.outputs.pass }}" \
+            -H "Authorization: Bearer $TOKEN" \
             -H "Content-Type: application/zip" \
             --data-binary @deployment.zip \
-            "https://${{ secrets.FUNCTION_APP_NAME }}.scm.azurewebsites.net/api/zipdeploy?isAsync=false")
+            "$SCM_URI/api/zipdeploy")
+
+          echo "Response:"
           cat /tmp/deploy_response.txt
+          echo ""
           echo "HTTP Status: $HTTP_STATUS"
+
           if [ "$HTTP_STATUS" != "200" ] && [ "$HTTP_STATUS" != "202" ]; then
-            echo "Deployment failed with status $HTTP_STATUS"
+            echo "Deployment failed with HTTP $HTTP_STATUS"
             exit 1
           fi
           echo "Deployment succeeded"
