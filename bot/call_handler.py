@@ -178,6 +178,9 @@ class CallHandler:
             "Microsoft.Communication.CallTransferAccepted",
             "Microsoft.Communication.CallDisconnected",
         ):
+            if not call_id:
+                logger.warning("Ignoring callback '%s' with missing callConnectionId", event_type)
+                return
             self._pending_store.delete(call_id)
             logger.info("%s (call_id=%s)", event_type.split(".")[-1], call_id)
             return
