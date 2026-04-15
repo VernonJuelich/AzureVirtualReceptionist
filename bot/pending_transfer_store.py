@@ -3,7 +3,7 @@ import os
 from datetime import datetime, timedelta, timezone
 from typing import Optional, Dict
 
-from azure.data.tables import TableServiceClient
+from azure.data.tables import TableServiceClient, UpdateMode
 
 logger = logging.getLogger(__name__)
 
@@ -38,7 +38,7 @@ class PendingTransferStore:
             "display_name": display_name,
             "expires_utc": expires_utc,
         }
-        self._table.upsert_entity(mode="MERGE", entity=entity)
+        self._table.upsert_entity(mode=UpdateMode.MERGE, entity=entity)
         logger.info("Saved pending transfer state for call_connection_id=%s", call_connection_id)
 
     def get(self, call_connection_id: str) -> Optional[Dict[str, str]]:
