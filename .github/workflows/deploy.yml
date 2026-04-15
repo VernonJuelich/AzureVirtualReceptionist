@@ -92,35 +92,20 @@ jobs:
 
       - name: Retrieve function key (with retry)
         run: |
-          CREDS=$(az functionapp deployment list-publishing-credentials \
-            --name            "${{ secrets.FUNCTION_APP_NAME }}" \
-            --resource-group  "${{ secrets.AZURE_RESOURCE_GROUP }}" \
-            --query           "{u:publishingUserName, p:publishingPassword}" \
-            --output          json)
-
-          KUDU_USER=$(echo "$CREDS" | python3 -c "import sys,json; d=json.load(sys.stdin); print(d['u'])")
-          KUDU_PASS=$(echo "$CREDS" | python3 -c "import sys,json; d=json.load(sys.stdin); print(d['p'])")
-
-          KUDU_URL="https://${{ secrets.FUNCTION_APP_NAME }}.scm.azurewebsites.net/api/functions/admin/masterkey"
-
           MAX_ATTEMPTS=10
           ATTEMPT=1
           while [ $ATTEMPT -le $MAX_ATTEMPTS ]; do
             echo "Key fetch attempt $ATTEMPT of $MAX_ATTEMPTS..."
-            RESPONSE=$(curl -s -w "\n%{http_code}" --max-time 20 \
-              -u "$KUDU_USER:$KUDU_PASS" \
-              "$KUDU_URL")
-            HTTP_CODE=$(echo "$RESPONSE" | tail -1)
-            BODY=$(echo "$RESPONSE" | head -1)
-            echo "  HTTP $HTTP_CODE"
+            FUNCTION_KEY=$(az functionapp keys list \
+              --name            "${{ secrets.FUNCTION_APP_NAME }}" \
+              --resource-group  "${{ secrets.AZURE_RESOURCE_GROUP }}" \
+              --query           "functionKeys.default" \
+              --output          tsv 2>/dev/null)
 
-            if [ "$HTTP_CODE" = "200" ]; then
-              FUNCTION_KEY=$(echo "$BODY" | python3 -c "import sys,json; print(json.load(sys.stdin)['masterKey'])")
-              if [ -n "$FUNCTION_KEY" ]; then
-                echo "Function key retrieved."
-                echo "FUNCTION_KEY=$FUNCTION_KEY" >> "$GITHUB_ENV"
-                break
-              fi
+            if [ -n "$FUNCTION_KEY" ] && [ "$FUNCTION_KEY" != "null" ]; then
+              echo "Function key retrieved."
+              echo "FUNCTION_KEY=$FUNCTION_KEY" >> "$GITHUB_ENV"
+              break
             fi
 
             echo "  Not ready yet — waiting 20s..."
@@ -181,7 +166,7 @@ jobs:
               "status":  "failure",
               "app":     "${{ secrets.FUNCTION_APP_NAME }}",
               "branch":  "${{ github.ref_name }}",
-              "commit":  "${{ github.sha }}",
+              "commit":  "${{ secrets.FUNCTION_APP_NAME }}",
               "actor":   "${{ github.actor }}",
               "message": "Virtual Receptionist deployment FAILED - check GitHub Actions logs"
             }' || true
