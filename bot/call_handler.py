@@ -234,7 +234,6 @@ class CallHandler:
         """
         logger.info("CallConnected (call_id=%s)", call_id)
 
-        voice = self.config.get("receptionist:voice_name")
         speech_lang = self.config.get("receptionist:speech_language", "en-AU")
 
         if not self._is_open():
@@ -262,12 +261,11 @@ class CallHandler:
             return
 
         greeting = self.config.get("receptionist:greeting_message")
-        greeting_ssml = build_ssml_message(greeting, voice)
 
         conn.start_recognizing_media(
             input_type="speech",
             target_participant=caller_id,
-            play_prompt=self._ssml(greeting_ssml),
+            play_prompt=self._tts(greeting),
             interrupt_prompt=True,
             interrupt_call_media_operation=True,
             speech_language=speech_lang,
