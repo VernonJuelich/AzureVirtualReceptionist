@@ -36,7 +36,7 @@ from azure.communication.callautomation import (
 
 from config_loader import ConfigLoader
 from graph_client import DirectoryUnavailableError, get_staff_members
-from matcher import NameMatcher, build_ssml_message, build_ssml_transfer_message
+from matcher import NameMatcher, build_ssml_transfer_message
 from pending_transfer_store import PendingTransferStore
 
 logger = logging.getLogger(__name__)
