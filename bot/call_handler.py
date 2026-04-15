@@ -61,8 +61,8 @@ class CallHandler:
             self.config.get_acs_connection_string()
         )
 
-    def _ssml(self, ssml_text: str) -> SsmlSource:
-   	 return SsmlSource(ssml_text=ssml_text)
+def _ssml(self, ssml_text: str) -> SsmlSource:
+        return SsmlSource(ssml_text=ssml_text)
 
     def _tts(self, text: str) -> TextSource:
         return TextSource(
