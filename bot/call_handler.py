@@ -36,7 +36,7 @@ from azure.communication.callautomation import (
 
 from config_loader import ConfigLoader
 from graph_client import DirectoryUnavailableError, get_staff_members
-from matcher import NameMatcher, build_ssml_transfer_message
+from matcher import NameMatcher, build_ssml_message, build_ssml_transfer_message
 from pending_transfer_store import PendingTransferStore
 
 logger = logging.getLogger(__name__)
@@ -206,6 +206,17 @@ class CallHandler:
             return
 
         conn = self._acs().get_call_connection(call_id)
+
+        if event_type in ("Microsoft.Communication.RecognizeFailed",
+                          "Microsoft.Communication.PlayFailed"):
+            result_info = data.get("resultInformation") or {}
+            logger.error(
+                "ACS failure event %s: code=%s subcode=%s message=%s",
+                event_type,
+                result_info.get("code"),
+                result_info.get("subCode"),
+                result_info.get("message"),
+            )
 
         if event_type == "Microsoft.Communication.RecognizeCompleted":
             await self._on_speech_recognised(conn, data, op_context)
