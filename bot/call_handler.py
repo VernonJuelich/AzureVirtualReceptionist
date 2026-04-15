@@ -68,6 +68,7 @@ class CallHandler:
         return TextSource(
             text=text,
             voice_name=self.config.get("receptionist:voice_name"),
+          source_locale=self.config.get("receptionist:speech_language", "en-AU"),
         )
 
     def _is_open(self) -> bool:
