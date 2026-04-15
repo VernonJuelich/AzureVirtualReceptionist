@@ -21,9 +21,13 @@ class PendingTransferStore:
             raise EnvironmentError(
                 "AzureWebJobsStorage is not set. It is required for durable pending transfer state."
             )
+
         self._service = TableServiceClient.from_connection_string(self._connection_string)
+        try:
+            self._service.create_table(table_name=self.TABLE_NAME)
+        except Exception:
+            pass  # Table already exists
         self._table = self._service.get_table_client(self.TABLE_NAME)
-        self._table.create_table_if_not_exists()
 
     def save(self, call_connection_id: str, aad_id: str, display_name: str, ttl_minutes: int = 30):
         expires_utc = (datetime.now(timezone.utc) + timedelta(minutes=ttl_minutes)).isoformat()
@@ -43,12 +47,7 @@ class PendingTransferStore:
                 partition_key=self.PARTITION_KEY,
                 row_key=call_connection_id,
             )
-        except Exception as exc:
-            logger.warning(
-                "Failed to load pending transfer state for call_connection_id=%s: %s",
-                call_connection_id,
-                exc,
-            )
+        except Exception:
             return None
 
         expires_utc = entity.get("expires_utc")
@@ -65,7 +64,11 @@ class PendingTransferStore:
                     self.delete(call_connection_id)
                     return None
             except Exception as exc:
-                logger.warning("Could not parse expires_utc for call_connection_id=%s: %s", call_connection_id, exc)
+                logger.warning(
+                    "Could not parse expires_utc for call_connection_id=%s: %s",
+                    call_connection_id,
+                    exc,
+                )
 
         return {
             "aad_id": entity.get("aad_id", ""),
@@ -79,9 +82,5 @@ class PendingTransferStore:
                 row_key=call_connection_id,
             )
             logger.info("Deleted pending transfer state for call_connection_id=%s", call_connection_id)
-        except Exception as exc:
-            logger.warning(
-                "Failed to delete pending transfer state for call_connection_id=%s: %s",
-                call_connection_id,
-                exc,
-            )
+        except Exception:
+            pass
