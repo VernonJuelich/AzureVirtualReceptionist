@@ -62,7 +62,7 @@ class CallHandler:
         )
 
     def _ssml(self, ssml_text: str) -> SsmlSource:
-        return SsmlSource(ssml_document=ssml_text)
+   	 return SsmlSource(ssml_text=ssml_text)
 
     def _tts(self, text: str) -> TextSource:
         return TextSource(
