@@ -3,17 +3,13 @@ call_handler.py
 ===============
 Orchestrates the full ACS call flow.
 
-What this version fixes:
-  - Resolves a real CallConnectionClient after answer_call(); answer_call()
-    returns CallConnectionProperties, not a usable connection client.
-  - Passes cognitive_services_endpoint during answer so speech recognition is
-    wired correctly for ACS recognize flows.
-  - Persists pending transfer state in Azure Table Storage so PlayCompleted can
-    complete the transfer even when callback events land on another Function
-    instance.
-  - Handles ACS / PSTN / Teams caller identifiers more defensively.
-  - Avoids hard failure when caller identity cannot be reconstructed by falling
-    back to a best-effort participant lookup before recognition retries.
+What this version adds:
+  - Retry on no match: asks caller to try again before routing to reception
+  - Confidence threshold: rejects low-confidence recognition (background noise)
+  - Logs spoken text and match details for tuning
+  - PlayFailed handler: attempts transfer even if announcement TTS fails
+  - Plain TextSource for all TTS (SSML removed — not supported in TPE mode)
+  - source_locale added to TextSource for correct neural voice selection
 """
 
 from __future__ import annotations
@@ -30,13 +26,12 @@ from azure.communication.callautomation import (
     CommunicationUserIdentifier,
     MicrosoftTeamsUserIdentifier,
     PhoneNumberIdentifier,
-    SsmlSource,
     TextSource,
 )
 
 from config_loader import ConfigLoader
 from graph_client import DirectoryUnavailableError, get_staff_members
-from matcher import NameMatcher, build_ssml_transfer_message
+from matcher import NameMatcher
 from pending_transfer_store import PendingTransferStore
 
 logger = logging.getLogger(__name__)
@@ -60,9 +55,6 @@ class CallHandler:
         return CallAutomationClient.from_connection_string(
             self.config.get_acs_connection_string()
         )
-
-    def _ssml(self, ssml_text: str) -> SsmlSource:
-        return SsmlSource(ssml_text=ssml_text)
 
     def _tts(self, text: str) -> TextSource:
         return TextSource(
@@ -228,6 +220,8 @@ class CallHandler:
         elif event_type == "Microsoft.Communication.CallTransferAccepted":
             self._pending_store.delete(call_id)
             logger.info("Transfer accepted (call_id=%s)", call_id)
+        elif event_type == "Microsoft.Communication.PlayFailed":
+            await self._on_play_failed(conn, call_id, op_context, data)
         elif event_type == "Microsoft.Communication.CallTransferFailed":
             await self._on_transfer_failed(conn, call_id, data, op_context)
         elif event_type == "Microsoft.Communication.CallDisconnected":
@@ -323,16 +317,23 @@ class CallHandler:
     async def _on_speech_recognised(self, conn, data: dict, op_context: str):
         speech_result = data.get("speechResult", {}) or {}
         spoken = (speech_result.get("speech") or "").strip()
+        confidence = float(speech_result.get("confidence") or 1.0)
         call_id = data.get("callConnectionId", "")
 
         logger.info(
-            "Speech recognised (chars=%d, op_context=%s, call_id=%s)",
+            "Speech recognised (chars=%d, confidence=%.2f, op_context=%s, call_id=%s)",
             len(spoken),
+            confidence,
             op_context,
             call_id,
         )
 
-        if not spoken:
+        # Reject low-confidence recognition (background noise etc.)
+        if not spoken or confidence < 0.4:
+            logger.info(
+                "Rejecting low-confidence recognition (confidence=%.2f, spoken='%s')",
+                confidence, spoken,
+            )
             await self._on_speech_failed(conn, call_id, op_context)
             return
 
@@ -359,15 +360,41 @@ class CallHandler:
         threshold = self.config.get_int("receptionist:match_threshold", 65)
         matcher = NameMatcher(threshold=threshold)
         result = matcher.match(spoken, staff_list)
-        voice = self.config.get("receptionist:voice_name")
 
         if not result.found:
+            logger.info("No directory match found for '%s'", spoken)
+            # On first attempt, ask caller to try again rather than routing to reception
+            try:
+                attempt_num = int(op_context.split(":")[-1])
+            except (ValueError, IndexError):
+                attempt_num = 1
+
+            if attempt_num < 2:
+                speech_lang = self.config.get("receptionist:speech_language", "en-AU")
+                caller_id = self._best_effort_target_participant(conn)
+                if caller_id:
+                    conn.start_recognizing_media(
+                        input_type="speech",
+                        target_participant=caller_id,
+                        play_prompt=self._tts(
+                            "I'm sorry, I couldn't find that person. "
+                            "Please say the full name of the person you would like to speak to."
+                        ),
+                        interrupt_prompt=True,
+                        interrupt_call_media_operation=True,
+                        speech_language=speech_lang,
+                        initial_silence_timeout=10,
+                        end_silence_timeout=2,
+                        operation_context="attempt:2",
+                    )
+                    logger.info("No match — prompting retry for call_id=%s", call_id)
+                    return
+
             noanswer = self.config.get("receptionist:noanswer_message")
             conn.play_media_to_all(
                 self._tts(noanswer),
                 operation_context="pre_fallback",
             )
-            logger.info("No directory match found for '%s'", spoken)
             return
 
         if not _is_valid_aad_id(result.staff.aad_id):
@@ -381,20 +408,22 @@ class CallHandler:
             )
             return
 
+        logger.info(
+            "Matched '%s' to '%s' via %s (score=%.1f, confidence=%.2f)",
+            spoken,
+            result.staff.display_name,
+            result.strategy,
+            result.score,
+            confidence,
+        )
         self._pending_store.save(
             call_connection_id=call_id,
             aad_id=result.staff.aad_id,
             display_name=result.staff.display_name,
         )
         conn.play_media_to_all(
-            self._ssml(build_ssml_transfer_message(result.staff, voice)),
+            self._tts(f"Please hold. Connecting you to {result.staff.tts_name}."),
             operation_context="pre_transfer",
-        )
-        logger.info(
-            "Queued transfer to '%s' via %s (score=%.1f)",
-            result.staff.display_name,
-            result.strategy,
-            result.score,
         )
 
     async def _on_speech_failed(self, conn, call_id: str, op_context: str):
@@ -445,6 +474,34 @@ class CallHandler:
             ),
             operation_context="pre_fallback",
         )
+
+    async def _on_play_failed(self, conn, call_id: str, op_context: str, data: dict):
+        result_info = data.get("resultInformation") or {}
+        logger.error(
+            "PlayFailed (op_context=%s, code=%s, message=%s)",
+            op_context,
+            result_info.get("code"),
+            result_info.get("message"),
+        )
+        # If transfer announcement failed, still attempt the transfer
+        if op_context == "pre_transfer":
+            pending = self._pending_store.get(call_id)
+            if pending:
+                logger.info(
+                    "PlayFailed on pre_transfer — attempting transfer anyway to '%s'",
+                    pending["display_name"],
+                )
+                self._do_transfer(
+                    conn,
+                    pending["aad_id"],
+                    pending["display_name"],
+                    is_fallback=False,
+                )
+                return
+        # For other play failures, route to reception
+        if op_context not in ("terminal_fallback",):
+            reception_id = self.config.get("receptionist:default_reception_aad_id")
+            self._do_transfer(conn, reception_id, "Reception", is_fallback=True)
 
     async def _on_transfer_failed(self, conn, call_id: str, data: dict, op_context: str):
         reason = (data.get("resultInformation") or {}).get("message", "unknown")
