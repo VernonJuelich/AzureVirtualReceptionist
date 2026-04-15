@@ -22,7 +22,7 @@ import logging
 import re
 from datetime import datetime
 from datetime import time as dtime
-from typing import Optional
+
 from zoneinfo import ZoneInfo
 
 from azure.communication.callautomation import (
@@ -45,7 +45,6 @@ _UUID_RE = re.compile(
     r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
     re.IGNORECASE,
 )
-
 
 
 def _is_valid_aad_id(value: str) -> bool:
@@ -105,16 +104,12 @@ class CallHandler:
         if not callback_url:
             raise ValueError("Missing config key receptionist:acs_callback_url")
 
-        voice = self.config.get("receptionist:voice_name")
-        speech_lang = self.config.get("receptionist:speech_language", "en-AU")
         cognitive_services_endpoint = self.config.get(
             "receptionist:cognitive_services_endpoint"
         )
 
         correlation_id = data.get("correlationId", "unknown")
         logger.info("Handling incoming call (correlationId=%s)", correlation_id)
-
-        caller_id = self._extract_caller_id(data.get("from", {}) or {})
 
         client = self._acs()
         answer_result = client.answer_call(
@@ -124,7 +119,6 @@ class CallHandler:
             operation_context=f"answer:{correlation_id}",
         )
         call_connection_id = answer_result.call_connection_id
-        conn = client.get_call_connection(call_connection_id)
 
         logger.info("Call answered (call_connection_id=%s)", call_connection_id)
         # Greeting and recognition are started in _on_call_connected,
