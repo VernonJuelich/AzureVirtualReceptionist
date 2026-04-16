@@ -20,9 +20,7 @@ from dataclasses import dataclass
 
 from azure.identity import ClientSecretCredential
 from msgraph import GraphServiceClient
-from msgraph.generated.groups.item.members.members_request_builder import (
-    MembersRequestBuilder,
-)
+from msgraph.generated.groups.item.members.members_request_builder import MembersRequestBuilder
 from kiota_abstractions.base_request_configuration import RequestConfiguration
 
 logger = logging.getLogger(__name__)
@@ -166,10 +164,6 @@ async def get_staff_members(
                 break
 
             logger.info("Graph paging — fetching next page...")
-            from msgraph.generated.groups.item.members.members_request_builder import (
-                MembersRequestBuilder as MRB,
-            )
-            # with_url returns a new builder scoped to the absolute nextLink URL
             page = await graph.groups.by_group_id(group_id).members.with_url(
                 next_link
             ).get()

@@ -140,13 +140,13 @@ class ConfigLoader:
         Validates format — invalid entries default to closed with a warning.
         """
         day_map = {
-            "monday":    "receptionist:business_hours_mon",
-            "tuesday":   "receptionist:business_hours_tue",
+            "monday": "receptionist:business_hours_mon",
+            "tuesday": "receptionist:business_hours_tue",
             "wednesday": "receptionist:business_hours_wed",
-            "thursday":  "receptionist:business_hours_thu",
-            "friday":    "receptionist:business_hours_fri",
-            "saturday":  "receptionist:business_hours_sat",
-            "sunday":    "receptionist:business_hours_sun",
+            "thursday": "receptionist:business_hours_thu",
+            "friday": "receptionist:business_hours_fri",
+            "saturday": "receptionist:business_hours_sat",
+            "sunday": "receptionist:business_hours_sun",
         }
         result = {}
         for day, key in day_map.items():
