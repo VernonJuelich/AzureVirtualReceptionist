@@ -53,54 +53,66 @@ jobs:
         with:
           python-version: ${{ env.PYTHON_VERSION }}
 
-      - name: Install dependencies into package folder
-        run: |
-          pushd bot
-          pip install -r requirements.txt \
-            --target=".python_packages/lib/site-packages" \
-            --platform manylinux2014_x86_64 \
-            --python-version 3.11 \
-            --only-binary=:all: \
-            --upgrade
-          popd
-
       - name: Login to Azure
         uses: azure/login@v2
         with:
           creds: ${{ secrets.AZURE_CREDENTIALS }}
 
-      - name: Configure app settings
+      # Ensure the Function App is configured for SCM-based deployment.
+      # WEBSITE_RUN_FROM_PACKAGE=0 means code is deployed to wwwroot directly
+      # (not from a zip package), so Kudu's SCM build pipeline can install
+      # dependencies server-side. This avoids cross-platform wheel issues that
+      # arise from pre-building on ubuntu-latest and uploading binaries.
+      - name: Configure deployment settings
         run: |
           az functionapp config appsettings set \
             --name "${{ secrets.FUNCTION_APP_NAME }}" \
             --resource-group "${{ secrets.AZURE_RESOURCE_GROUP }}" \
             --settings \
               "WEBSITE_RUN_FROM_PACKAGE=0" \
-              "SCM_DO_BUILD_DURING_DEPLOYMENT=false" \
+              "SCM_DO_BUILD_DURING_DEPLOYMENT=true" \
             --output none
 
       - name: Deploy bot to Azure Function App
+        # scm-do-build-during-deployment=true tells the Kudu SCM pipeline to
+        # run `pip install -r requirements.txt` server-side after the upload.
+        # enable-oryx-build is intentionally omitted — it conflicts with
+        # WEBSITE_RUN_FROM_PACKAGE and causes deployment failures.
         uses: Azure/functions-action@v1
         with:
           app-name:                       ${{ secrets.FUNCTION_APP_NAME }}
           package:                        './bot'
-          scm-do-build-during-deployment: false
-          enable-oryx-build:              false
+          scm-do-build-during-deployment: true
 
       - name: Wait for Function App cold start
+        # SCM build + Python worker init on Consumption plan can take 90s+
         run: sleep 90
 
-      - name: Retrieve function key (with retry)
+      - name: Retrieve function key via Kudu SCM API
+        # az functionapp keys list depends on the Functions runtime being fully
+        # initialised — it can fail immediately after a cold deploy. The Kudu
+        # SCM API operates independently of the runtime and is reliable here.
         run: |
           MAX_ATTEMPTS=10
           ATTEMPT=1
           while [ $ATTEMPT -le $MAX_ATTEMPTS ]; do
             echo "Key fetch attempt $ATTEMPT of $MAX_ATTEMPTS..."
-            FUNCTION_KEY=$(az functionapp keys list \
+
+            CREDS=$(az functionapp deployment list-publishing-credentials \
               --name            "${{ secrets.FUNCTION_APP_NAME }}" \
               --resource-group  "${{ secrets.AZURE_RESOURCE_GROUP }}" \
-              --query           "functionKeys.default" \
-              --output          tsv 2>/dev/null)
+              --query           "[publishingUserName, publishingPassword]" \
+              --output          tsv)
+
+            KUDU_USER=$(echo "$CREDS" | awk 'NR==1')
+            KUDU_PASS=$(echo "$CREDS" | awk 'NR==2')
+
+            KUDU_RESPONSE=$(curl -s \
+              -u "${KUDU_USER}:${KUDU_PASS}" \
+              "https://${{ secrets.FUNCTION_APP_NAME }}.scm.azurewebsites.net/api/functions/admin/masterkey")
+
+            FUNCTION_KEY=$(echo "$KUDU_RESPONSE" | python3 -c \
+              "import sys,json; d=json.load(sys.stdin); print(d.get('masterKey',''))" 2>/dev/null)
 
             if [ -n "$FUNCTION_KEY" ] && [ "$FUNCTION_KEY" != "null" ]; then
               echo "Function key retrieved."
@@ -118,7 +130,7 @@ jobs:
             exit 1
           fi
 
-      - name: Health check (with retry)
+      - name: Health check
         run: |
           HEALTH_URL="https://${{ secrets.FUNCTION_APP_NAME }}.azurewebsites.net/api/health?code=${FUNCTION_KEY}"
           echo "Checking: $HEALTH_URL"
@@ -127,12 +139,42 @@ jobs:
           ATTEMPT=1
           while [ $ATTEMPT -le $MAX_ATTEMPTS ]; do
             echo "Health check attempt $ATTEMPT of $MAX_ATTEMPTS..."
-            HTTP_STATUS=$(curl -s -o /dev/null -w "%{http_code}" --max-time 30 "$HEALTH_URL")
+
+            HTTP_STATUS=$(curl -s -o /tmp/health_body -w "%{http_code}" --max-time 30 "$HEALTH_URL")
+            BODY=$(cat /tmp/health_body)
+            echo "HTTP $HTTP_STATUS — $BODY"
+
             if [ "$HTTP_STATUS" = "200" ]; then
-              echo "Health check passed (HTTP 200)"
+              echo "Health check passed"
               exit 0
             fi
-            echo "Health check returned HTTP $HTTP_STATUS"
+
+            # On 404: runtime is up but route not found.
+            # Dump the wwwroot file listing to diagnose packaging issues.
+            if [ "$HTTP_STATUS" = "404" ]; then
+              echo "--- 404: dumping wwwroot file listing ---"
+              CREDS=$(az functionapp deployment list-publishing-credentials \
+                --name            "${{ secrets.FUNCTION_APP_NAME }}" \
+                --resource-group  "${{ secrets.AZURE_RESOURCE_GROUP }}" \
+                --query           "[publishingUserName, publishingPassword]" \
+                --output          tsv)
+              KUDU_USER=$(echo "$CREDS" | awk 'NR==1')
+              KUDU_PASS=$(echo "$CREDS" | awk 'NR==2')
+              curl -s -u "${KUDU_USER}:${KUDU_PASS}" \
+                "https://${{ secrets.FUNCTION_APP_NAME }}.scm.azurewebsites.net/api/vfs/site/wwwroot/" \
+                | python3 -c "
+          import sys, json
+          try:
+              items = json.load(sys.stdin)
+              print('wwwroot contents:')
+              for f in items:
+                  print(' ', f.get('name','?'))
+          except Exception as e:
+              print('Could not parse listing:', e)
+          "
+              echo "--- end listing ---"
+            fi
+
             if [ $ATTEMPT -lt $MAX_ATTEMPTS ]; then
               echo "Waiting 20s before retry..."
               sleep 20
@@ -166,7 +208,7 @@ jobs:
               "status":  "failure",
               "app":     "${{ secrets.FUNCTION_APP_NAME }}",
               "branch":  "${{ github.ref_name }}",
-              "commit":  "${{ secrets.FUNCTION_APP_NAME }}",
+              "commit":  "${{ github.sha }}",
               "actor":   "${{ github.actor }}",
               "message": "Virtual Receptionist deployment FAILED - check GitHub Actions logs"
             }' || true
