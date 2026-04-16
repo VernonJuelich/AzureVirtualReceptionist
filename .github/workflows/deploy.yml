@@ -88,42 +88,23 @@ jobs:
         # SCM build + Python worker init on Consumption plan can take 90s+
         run: sleep 90
 
-      - name: Retrieve function key via Kudu SCM API
-        # az functionapp keys list depends on the Functions runtime being fully
-        # initialised — it can fail immediately after a cold deploy. The Kudu
-        # SCM API operates independently of the runtime and is reliable here.
-        #
-        # NOTE: --query "[a, b]" --output tsv returns a single TAB-separated
-        # line, not two newline-separated lines. Query each field individually
-        # to avoid the awk NR==2 returning empty string.
+      - name: Retrieve function key (with retry)
+        # Uses az functionapp keys list with retry. We already waited 90s for
+        # the cold start, so the runtime should be up. If it isn't yet, we
+        # retry every 20s up to 10 times (3m20s total additional wait).
+        # Avoids Kudu basic-auth which requires Microsoft.Web/sites/config/list
+        # RBAC permission that the deploy service principal may not have.
         run: |
-          KUDU_USER=$(az functionapp deployment list-publishing-credentials \
-            --name           "${{ secrets.FUNCTION_APP_NAME }}" \
-            --resource-group "${{ secrets.AZURE_RESOURCE_GROUP }}" \
-            --query          "publishingUserName" \
-            --output         tsv)
-
-          KUDU_PASS=$(az functionapp deployment list-publishing-credentials \
-            --name           "${{ secrets.FUNCTION_APP_NAME }}" \
-            --resource-group "${{ secrets.AZURE_RESOURCE_GROUP }}" \
-            --query          "publishingPassword" \
-            --output         tsv)
-
-          echo "Kudu user: $KUDU_USER"
-
           MAX_ATTEMPTS=10
           ATTEMPT=1
           while [ $ATTEMPT -le $MAX_ATTEMPTS ]; do
             echo "Key fetch attempt $ATTEMPT of $MAX_ATTEMPTS..."
 
-            KUDU_RESPONSE=$(curl -s \
-              -u "${KUDU_USER}:${KUDU_PASS}" \
-              "https://${{ secrets.FUNCTION_APP_NAME }}.scm.azurewebsites.net/api/functions/admin/masterkey")
-
-            echo "Kudu response: $KUDU_RESPONSE"
-
-            FUNCTION_KEY=$(echo "$KUDU_RESPONSE" | python3 -c \
-              "import sys,json; d=json.load(sys.stdin); print(d.get('masterKey',''))" 2>/dev/null)
+            FUNCTION_KEY=$(az functionapp keys list \
+              --name           "${{ secrets.FUNCTION_APP_NAME }}" \
+              --resource-group "${{ secrets.AZURE_RESOURCE_GROUP }}" \
+              --query          "functionKeys.default" \
+              --output         tsv 2>/dev/null || true)
 
             if [ -n "$FUNCTION_KEY" ] && [ "$FUNCTION_KEY" != "null" ]; then
               echo "Function key retrieved."
@@ -131,13 +112,14 @@ jobs:
               break
             fi
 
-            echo "  Not ready yet — waiting 20s..."
+            echo "  Runtime not ready yet — waiting 20s..."
             sleep 20
             ATTEMPT=$((ATTEMPT + 1))
           done
 
-          if [ -z "$FUNCTION_KEY" ]; then
-            echo "Failed to retrieve function key after $MAX_ATTEMPTS attempts"
+          if [ -z "$FUNCTION_KEY" ] || [ "$FUNCTION_KEY" = "null" ]; then
+            echo "Failed to retrieve function key after $MAX_ATTEMPTS attempts."
+            echo "Check Function App logs: az webapp log tail --name ${{ secrets.FUNCTION_APP_NAME }} --resource-group ${{ secrets.AZURE_RESOURCE_GROUP }}"
             exit 1
           fi
 
@@ -160,33 +142,15 @@ jobs:
               exit 0
             fi
 
-            # On 404: runtime is up but route not found.
-            # Dump the wwwroot file listing to diagnose packaging issues.
+            # On 404: runtime is up but routes not registered — likely a Python
+            # import failure at startup. Print the live log tail for diagnosis.
             if [ "$HTTP_STATUS" = "404" ]; then
-              echo "--- 404: dumping wwwroot file listing ---"
-              DIAG_USER=$(az functionapp deployment list-publishing-credentials \
-                --name            "${{ secrets.FUNCTION_APP_NAME }}" \
-                --resource-group  "${{ secrets.AZURE_RESOURCE_GROUP }}" \
-                --query           "publishingUserName" \
-                --output          tsv)
-              DIAG_PASS=$(az functionapp deployment list-publishing-credentials \
-                --name            "${{ secrets.FUNCTION_APP_NAME }}" \
-                --resource-group  "${{ secrets.AZURE_RESOURCE_GROUP }}" \
-                --query           "publishingPassword" \
-                --output          tsv)
-              curl -s -u "${DIAG_USER}:${DIAG_PASS}" \
-                "https://${{ secrets.FUNCTION_APP_NAME }}.scm.azurewebsites.net/api/vfs/site/wwwroot/" \
-                | python3 -c "
-          import sys, json
-          try:
-              items = json.load(sys.stdin)
-              print('wwwroot contents:')
-              for f in items:
-                  print(' ', f.get('name','?'))
-          except Exception as e:
-              print('Could not parse listing:', e)
-          "
-              echo "--- end listing ---"
+              echo "--- 404: fetching recent Function App logs ---"
+              az webapp log tail \
+                --name           "${{ secrets.FUNCTION_APP_NAME }}" \
+                --resource-group "${{ secrets.AZURE_RESOURCE_GROUP }}" \
+                --timeout        10 2>/dev/null || true
+              echo "--- end logs ---"
             fi
 
             if [ $ATTEMPT -lt $MAX_ATTEMPTS ]; then
