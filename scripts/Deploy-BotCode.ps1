@@ -30,7 +30,6 @@ Write-Host "`n=== Deploying Bot Code ===" -ForegroundColor Cyan
 Write-Host "Function App: $FunctionAppName"
 Write-Host "Bot Path:     $BotPath`n"
 
-# Check Azure Functions Core Tools
 if (-not (Get-Command func -ErrorAction SilentlyContinue)) {
     Write-Error "Azure Functions Core Tools not found. Install from: https://learn.microsoft.com/en-us/azure/azure-functions/functions-run-local"
 }
@@ -43,45 +42,40 @@ try {
 
     Write-Host "`nDeployment complete." -ForegroundColor Green
 
-    # Wait for cold start — Consumption plan with heavy dependencies
-    # (msgraph-sdk, azure-identity) needs 60s minimum. Retry up to 5 times.
-    Write-Host "Waiting 60 seconds for Function App cold start..." -ForegroundColor Yellow
-    Start-Sleep -Seconds 60
+    Write-Host "Running health check..." -ForegroundColor Yellow
+    Start-Sleep -Seconds 20  # Wait for cold start
 
-    $FnKey = az functionapp keys list `
+    # Use Kudu SCM API for key retrieval — works independently of Functions
+    # runtime initialisation state, unlike az functionapp keys list.
+    Write-Host "Retrieving function key via Kudu SCM API..." -ForegroundColor DarkGray
+
+    $Creds = az functionapp deployment list-publishing-credentials `
         --name           $FunctionAppName `
         --resource-group $ResourceGroup `
-        --query          "functionKeys.default" `
+        --query          "[publishingUserName, publishingPassword]" `
         --output         tsv
 
+    $KuduUser = ($Creds -split "`n")[0].Trim()
+    $KuduPass = ($Creds -split "`n")[1].Trim()
+
+    $AuthHeader = "Basic " + [Convert]::ToBase64String(
+        [Text.Encoding]::ASCII.GetBytes("${KuduUser}:${KuduPass}"))
+
+    $MasterKeyResponse = Invoke-RestMethod `
+        -Uri     "https://$FunctionAppName.scm.azurewebsites.net/api/functions/admin/masterkey" `
+        -Method  Get `
+        -Headers @{ Authorization = $AuthHeader }
+
+    $FnKey = $MasterKeyResponse.masterKey
+
     $HealthUrl = "https://$FunctionAppName.azurewebsites.net/api/health?code=$FnKey"
+    $Response  = Invoke-RestMethod -Uri $HealthUrl -Method Get -TimeoutSec 30
 
-    $MaxAttempts = 5
-    $Attempt = 1
-    $Passed = $false
-
-    while ($Attempt -le $MaxAttempts) {
-        Write-Host "Health check attempt $Attempt of $MaxAttempts..." -ForegroundColor Yellow
-        try {
-            $Response = Invoke-RestMethod -Uri $HealthUrl -Method Get -TimeoutSec 20 -ErrorAction Stop
-            if ($Response.status -eq "ok") {
-                Write-Host "Health check passed." -ForegroundColor Green
-                Write-Host "  Company: $($Response.company)"
-                $Passed = $true
-                break
-            }
-        } catch {
-            Write-Host "  Health check error: $_" -ForegroundColor DarkGray
-        }
-        if ($Attempt -lt $MaxAttempts) {
-            Write-Host "  Waiting 15s before retry..." -ForegroundColor DarkGray
-            Start-Sleep -Seconds 15
-        }
-        $Attempt++
-    }
-
-    if (-not $Passed) {
-        Write-Warning "Health check failed after $MaxAttempts attempts. Check Azure Portal logs."
+    if ($Response.status -eq "ok") {
+        Write-Host "Health check passed." -ForegroundColor Green
+        Write-Host "  Company: $($Response.company)"
+    } else {
+        Write-Warning "Health check returned: $($Response.status)"
     }
 } finally {
     Pop-Location
