@@ -101,12 +101,12 @@
       "window_size": "P1D",
       "type": "manual_check",
       "notify": ["email"],
-      "note": "This is checked by Rotate-ClientSecret.ps1 and Set-AlertRules.ps1. Run monthly as part of lifecycle review."
+      "note": "Checked by Rotate-ClientSecret.ps1 and Set-AlertRules.ps1. Run monthly as part of lifecycle review."
     }
   ],
 
   "severity_reference": {
-    "0": "Critical — immediate action required",
+    "0": "Critical — immediate action required (Azure Monitor Sev 0)",
     "1": "Error — action required same day",
     "2": "Warning — investigate within business hours",
     "3": "Informational — review at next opportunity"
@@ -114,7 +114,7 @@
 
   "notification_targets": {
     "email": "REPLACE-WITH-IT-ALERT-EMAIL",
-    "teams": "REPLACE-WITH-TEAMS-WEBHOOK-URL"
+    "teams": "REPLACE-WITH-POWER-AUTOMATE-WEBHOOK-URL"
   },
 
   "action_groups": {
@@ -125,6 +125,7 @@
   "notes": [
     "This file is read by Set-AlertRules.ps1 to create Azure Monitor alert rules.",
     "Update notification_targets before running Set-AlertRules.ps1.",
+    "The teams webhook URL must be a Power Automate workflow URL — Office 365 Connector URLs (*.webhook.office.com) are deprecated.",
     "scheduled_query alerts require App Insights to be linked to the Function App.",
     "The client_secret_expiry alert is handled via PowerShell — not a native Azure Monitor rule.",
     "Adjust threshold values to suit your call volume after the first 2 weeks of operation."
