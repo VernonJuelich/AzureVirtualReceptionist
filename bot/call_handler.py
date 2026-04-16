@@ -5,9 +5,9 @@ Orchestrates the full call flow.
 
 Fixes applied:
   - MicrosoftTeamsUserIdentifier, TransferCallToParticipantOptions, PlayOptions
-    all imported from top-level azure.communication.callautomation package,
-    not the non-existent .models submodule (SDK v1.x)
-  - _pending_transfers documented as single-instance only; see NOTE below
+    all imported from top-level azure.communication.callautomation package
+  - _pending_transfers replaced with PendingTransferStore (Table Storage) so
+    pending state survives Function App scale-out across multiple instances
   - Transfer now waits for PlayCompleted event before initiating (no race condition)
   - After-hours and terminal fallback paths hang up the call cleanly
   - Retry count parsed explicitly — no longer fragile string-shape dependent
@@ -33,6 +33,7 @@ from azure.communication.callautomation import (
 from config_loader import ConfigLoader
 from graph_client import get_staff_members, DirectoryUnavailableError
 from matcher import NameMatcher, build_ssml_transfer_message, build_ssml_message
+from pending_transfer_store import PendingTransferStore
 
 logger = logging.getLogger(__name__)
 
@@ -42,15 +43,17 @@ _UUID_RE = re.compile(
     re.IGNORECASE
 )
 
-# NOTE: _pending_transfers is module-level, which works correctly when the
-# Function App runs as a single instance. If the Consumption plan scales out
-# to multiple instances, a transfer queued on instance A may receive its
-# PlayCompleted callback on instance B, causing the transfer to be silently
-# dropped. For high call-volume deployments, replace this dict with an
-# Azure Table Storage row (keyed on callConnectionId) to survive instance
-# routing. At typical receptionist volumes (single concurrent call) this
-# is not a practical problem.
-_pending_transfers: dict = {}
+# Module-level store instance — reused across warm invocations.
+# PendingTransferStore uses Azure Table Storage (AzureWebJobsStorage) so
+# transfer state survives across Function App instances during scale-out.
+_transfer_store: PendingTransferStore = None
+
+
+def _get_transfer_store() -> PendingTransferStore:
+    global _transfer_store
+    if _transfer_store is None:
+        _transfer_store = PendingTransferStore()
+    return _transfer_store
 
 
 def _is_valid_aad_id(value: str) -> bool:
@@ -81,9 +84,7 @@ class CallHandler:
         try:
             tz = ZoneInfo(tz_name)
         except Exception:
-            logger.warning(
-                "Invalid timezone '%s' — defaulting to UTC",
-                tz_name)
+            logger.warning("Invalid timezone '%s' — defaulting to UTC", tz_name)
             tz = ZoneInfo("UTC")
 
         now = datetime.now(tz)
@@ -112,9 +113,7 @@ class CallHandler:
         speech_lang = self.config.get("receptionist:speech_language", "en-AU")
 
         correlation_id = data.get("correlationId", "unknown")
-        logger.info(
-            "Handling incoming call (correlationId=%s)",
-            correlation_id)
+        logger.info("Handling incoming call (correlationId=%s)", correlation_id)
 
         client = self._acs()
         call_conn = client.answer_call(
@@ -128,7 +127,6 @@ class CallHandler:
                 self._tts(afterhours_msg),
                 play_options=PlayOptions(operation_context="afterhours_message"),
             )
-            # Hang up triggered in handle_callback on PlayCompleted
             return
 
         greeting = self.config.get("receptionist:greeting_message")
@@ -178,10 +176,6 @@ class CallHandler:
     # ── PlayCompleted — controls sequencing ─────────────────
 
     async def _on_play_completed(self, conn, call_id: str, op_context: str):
-        """
-        Triggered when an audio prompt finishes playing.
-        Used to sequence actions that must not race with audio.
-        """
         logger.info("PlayCompleted: op_context=%s", op_context)
 
         if op_context == "afterhours_message":
@@ -199,9 +193,10 @@ class CallHandler:
                 logger.warning("Hang up failed: %s", exc)
 
         elif op_context == "pre_transfer":
-            # "Connecting you to [name]" finished — now initiate transfer
-            pending = _pending_transfers.pop(call_id, None)
+            store = _get_transfer_store()
+            pending = store.get(call_id)
             if pending:
+                store.delete(call_id)
                 logger.info(
                     "PlayCompleted pre_transfer — initiating transfer to %s",
                     pending["display_name"])
@@ -211,19 +206,12 @@ class CallHandler:
                     pending["display_name"],
                     is_fallback=False)
             else:
-                logger.warning(
-                    "No pending transfer found for call_id=%s", call_id)
+                logger.warning("No pending transfer found for call_id=%s", call_id)
 
         elif op_context == "pre_fallback":
-            logger.info(
-                "PlayCompleted pre_fallback — transferring to reception")
-            reception_id = self.config.get(
-                "receptionist:default_reception_aad_id")
-            self._do_transfer(
-                conn,
-                reception_id,
-                "Reception",
-                is_fallback=True)
+            logger.info("PlayCompleted pre_fallback — transferring to reception")
+            reception_id = self.config.get("receptionist:default_reception_aad_id")
+            self._do_transfer(conn, reception_id, "Reception", is_fallback=True)
 
     # ── Speech recognised ─────────────────────────────────────
 
@@ -247,7 +235,9 @@ class CallHandler:
         except DirectoryUnavailableError:
             logger.error("Staff directory unavailable — routing to reception")
             conn.play_media_to_all(
-                self._tts("I'm sorry, our directory is currently unavailable. Let me transfer you to reception."),
+                self._tts(
+                    "I'm sorry, our directory is currently unavailable. "
+                    "Let me transfer you to reception."),
                 play_options=PlayOptions(operation_context="pre_fallback"),
             )
             return
@@ -256,7 +246,6 @@ class CallHandler:
         matcher = NameMatcher(threshold=threshold)
         result = matcher.match(spoken, staff_list)
         voice = self.config.get("receptionist:voice_name")
-
         call_id = data.get("callConnectionId", "")
 
         if result.found:
@@ -266,16 +255,19 @@ class CallHandler:
                     result.staff.display_name,
                     result.staff.aad_id)
                 conn.play_media_to_all(
-                    self._tts("I'm sorry, I'm unable to connect that call right now. Let me transfer you to reception."),
+                    self._tts(
+                        "I'm sorry, I'm unable to connect that call right now. "
+                        "Let me transfer you to reception."),
                     play_options=PlayOptions(operation_context="pre_fallback"),
                 )
                 return
 
-            # Store transfer target — actual transfer triggered after PlayCompleted
-            _pending_transfers[call_id] = {
-                "aad_id": result.staff.aad_id,
-                "display_name": result.staff.display_name,
-            }
+            # Persist transfer target to Table Storage — survives instance routing
+            _get_transfer_store().save(
+                call_connection_id=call_id,
+                aad_id=result.staff.aad_id,
+                display_name=result.staff.display_name,
+            )
             ssml = build_ssml_transfer_message(result.staff, voice)
             conn.play_media_to_all(
                 self._ssml(ssml),
@@ -296,22 +288,16 @@ class CallHandler:
     # ── Speech failed / silence ───────────────────────────────
 
     async def _on_speech_failed(self, conn, call_id: str, op_context: str):
-        """
-        Retry logic — explicit attempt number parsed from op_context.
-        Context format: "attempt:N" where N is 1 or 2.
-        After 2 failed attempts, route to reception.
-        """
         try:
             attempt_num = int(op_context.split(":")[-1])
         except (ValueError, IndexError):
-            attempt_num = 2  # Unknown context — go straight to fallback
+            attempt_num = 2
 
         speech_lang = self.config.get("receptionist:speech_language", "en-AU")
 
         if attempt_num < 2:
             logger.info(
-                "Speech not recognised (attempt %d) — prompting retry",
-                attempt_num)
+                "Speech not recognised (attempt %d) — prompting retry", attempt_num)
             conn.start_recognizing_media(
                 input_type="speech",
                 target_participant=None,
@@ -327,7 +313,9 @@ class CallHandler:
             logger.info(
                 "Speech not recognised after 2 attempts — routing to reception")
             conn.play_media_to_all(
-                self._tts("I'm unable to understand. Let me connect you to our reception team."),
+                self._tts(
+                    "I'm unable to understand. "
+                    "Let me connect you to our reception team."),
                 play_options=PlayOptions(operation_context="pre_fallback"),
             )
 
@@ -336,9 +324,7 @@ class CallHandler:
     async def _on_transfer_failed(self, conn, data: dict, op_context: str):
         reason = data.get("resultInformation", {}).get("message", "unknown")
         logger.error(
-            "Transfer failed (op_context=%s, reason=%s)",
-            op_context,
-            reason)
+            "Transfer failed (op_context=%s, reason=%s)", op_context, reason)
 
         if op_context == "fallback_transfer":
             conn.play_media_to_all(
@@ -349,7 +335,9 @@ class CallHandler:
             )
         else:
             conn.play_media_to_all(
-                self._tts("That extension is currently unavailable. Transferring you to reception."),
+                self._tts(
+                    "That extension is currently unavailable. "
+                    "Transferring you to reception."),
                 play_options=PlayOptions(operation_context="pre_fallback"),
             )
 
@@ -380,12 +368,8 @@ class CallHandler:
         try:
             conn.transfer_call_to_participant(options)
             logger.info(
-                "Transfer initiated → '%s' (%s)",
-                display_name,
-                aad_object_id)
+                "Transfer initiated → '%s' (%s)", display_name, aad_object_id)
         except Exception as exc:
             logger.error(
-                "Transfer initiation exception for '%s': %s",
-                display_name,
-                exc)
+                "Transfer initiation exception for '%s': %s", display_name, exc)
             raise
