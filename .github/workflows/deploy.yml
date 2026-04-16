@@ -92,24 +92,35 @@ jobs:
         # az functionapp keys list depends on the Functions runtime being fully
         # initialised — it can fail immediately after a cold deploy. The Kudu
         # SCM API operates independently of the runtime and is reliable here.
+        #
+        # NOTE: --query "[a, b]" --output tsv returns a single TAB-separated
+        # line, not two newline-separated lines. Query each field individually
+        # to avoid the awk NR==2 returning empty string.
         run: |
+          KUDU_USER=$(az functionapp deployment list-publishing-credentials \
+            --name           "${{ secrets.FUNCTION_APP_NAME }}" \
+            --resource-group "${{ secrets.AZURE_RESOURCE_GROUP }}" \
+            --query          "publishingUserName" \
+            --output         tsv)
+
+          KUDU_PASS=$(az functionapp deployment list-publishing-credentials \
+            --name           "${{ secrets.FUNCTION_APP_NAME }}" \
+            --resource-group "${{ secrets.AZURE_RESOURCE_GROUP }}" \
+            --query          "publishingPassword" \
+            --output         tsv)
+
+          echo "Kudu user: $KUDU_USER"
+
           MAX_ATTEMPTS=10
           ATTEMPT=1
           while [ $ATTEMPT -le $MAX_ATTEMPTS ]; do
             echo "Key fetch attempt $ATTEMPT of $MAX_ATTEMPTS..."
 
-            CREDS=$(az functionapp deployment list-publishing-credentials \
-              --name            "${{ secrets.FUNCTION_APP_NAME }}" \
-              --resource-group  "${{ secrets.AZURE_RESOURCE_GROUP }}" \
-              --query           "[publishingUserName, publishingPassword]" \
-              --output          tsv)
-
-            KUDU_USER=$(echo "$CREDS" | awk 'NR==1')
-            KUDU_PASS=$(echo "$CREDS" | awk 'NR==2')
-
             KUDU_RESPONSE=$(curl -s \
               -u "${KUDU_USER}:${KUDU_PASS}" \
               "https://${{ secrets.FUNCTION_APP_NAME }}.scm.azurewebsites.net/api/functions/admin/masterkey")
+
+            echo "Kudu response: $KUDU_RESPONSE"
 
             FUNCTION_KEY=$(echo "$KUDU_RESPONSE" | python3 -c \
               "import sys,json; d=json.load(sys.stdin); print(d.get('masterKey',''))" 2>/dev/null)
@@ -153,14 +164,17 @@ jobs:
             # Dump the wwwroot file listing to diagnose packaging issues.
             if [ "$HTTP_STATUS" = "404" ]; then
               echo "--- 404: dumping wwwroot file listing ---"
-              CREDS=$(az functionapp deployment list-publishing-credentials \
+              DIAG_USER=$(az functionapp deployment list-publishing-credentials \
                 --name            "${{ secrets.FUNCTION_APP_NAME }}" \
                 --resource-group  "${{ secrets.AZURE_RESOURCE_GROUP }}" \
-                --query           "[publishingUserName, publishingPassword]" \
+                --query           "publishingUserName" \
                 --output          tsv)
-              KUDU_USER=$(echo "$CREDS" | awk 'NR==1')
-              KUDU_PASS=$(echo "$CREDS" | awk 'NR==2')
-              curl -s -u "${KUDU_USER}:${KUDU_PASS}" \
+              DIAG_PASS=$(az functionapp deployment list-publishing-credentials \
+                --name            "${{ secrets.FUNCTION_APP_NAME }}" \
+                --resource-group  "${{ secrets.AZURE_RESOURCE_GROUP }}" \
+                --query           "publishingPassword" \
+                --output          tsv)
+              curl -s -u "${DIAG_USER}:${DIAG_PASS}" \
                 "https://${{ secrets.FUNCTION_APP_NAME }}.scm.azurewebsites.net/api/vfs/site/wwwroot/" \
                 | python3 -c "
           import sys, json
