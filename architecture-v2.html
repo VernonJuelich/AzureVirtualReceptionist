@@ -30,13 +30,11 @@
   }
   .page { position: relative; z-index: 1; max-width: 1160px; margin: 0 auto; padding: 44px 28px 80px; }
 
-  /* Header */
   .eyebrow { font-size: 9px; font-weight: 600; letter-spacing: 3px; text-transform: uppercase; color: var(--accent2); border: 1px solid rgba(52,211,153,0.3); display: inline-block; padding: 3px 12px; border-radius: 2px; margin-bottom: 14px; }
   h1 { font-family: 'Syne', sans-serif; font-size: clamp(24px, 3.5vw, 42px); font-weight: 800; color: #fff; line-height: 1.1; margin-bottom: 10px; }
   h1 em { color: var(--accent); font-style: normal; }
   .sub { color: var(--muted); font-size: 11px; line-height: 1.9; max-width: 680px; margin-bottom: 44px; }
 
-  /* Tenant wrapper — big box */
   .tenant-wrapper {
     border: 1.5px solid var(--border);
     border-radius: 14px;
@@ -53,51 +51,22 @@
   .tenant-label { font-size: 11px; color: var(--muted); }
   .tenant-label strong { color: var(--text); }
 
-  /* Flow rows inside tenant */
   .flow { display: flex; flex-direction: column; gap: 0; }
-
-  .flow-row {
-    display: grid;
-    grid-template-columns: 120px 1fr;
-    border-bottom: 1px solid var(--border);
-  }
+  .flow-row { display: grid; grid-template-columns: 120px 1fr; border-bottom: 1px solid var(--border); }
   .flow-row:last-child { border-bottom: none; }
+  .row-label { writing-mode: vertical-rl; transform: rotate(180deg); font-size: 8px; font-weight: 700; letter-spacing: 3px; text-transform: uppercase; display: flex; align-items: center; justify-content: center; padding: 20px 0; border-right: 1px solid var(--border); flex-shrink: 0; }
+  .row-cards { display: flex; align-items: stretch; gap: 0; flex-wrap: wrap; }
 
-  .row-label {
-    writing-mode: vertical-rl;
-    transform: rotate(180deg);
-    font-size: 8px; font-weight: 700; letter-spacing: 3px; text-transform: uppercase;
-    display: flex; align-items: center; justify-content: center;
-    padding: 20px 0;
-    border-right: 1px solid var(--border);
-    flex-shrink: 0;
-  }
-
-  .row-cards {
-    display: flex;
-    align-items: stretch;
-    gap: 0;
-    flex-wrap: wrap;
-  }
-
-  /* Card */
-  .card {
-    padding: 18px 20px;
-    display: flex; flex-direction: column; gap: 5px;
-    flex: 1; min-width: 155px;
-    border-right: 1px solid var(--border);
-    position: relative;
-    transition: background 0.2s;
-  }
+  .card { padding: 18px 20px; display: flex; flex-direction: column; gap: 5px; flex: 1; min-width: 155px; border-right: 1px solid var(--border); position: relative; transition: background 0.2s; }
   .card:last-child { border-right: none; }
   .card:hover { background: rgba(255,255,255,0.02); }
-
   .card-top { display: flex; align-items: center; gap: 8px; margin-bottom: 4px; }
   .card-icon { font-size: 18px; line-height: 1; }
   .card-name { font-family: 'Syne', sans-serif; font-size: 12px; font-weight: 700; color: #fff; }
   .card-service { font-size: 9px; font-weight: 600; letter-spacing: 1.5px; text-transform: uppercase; padding: 2px 7px; border-radius: 2px; width: fit-content; margin-bottom: 2px; }
   .card-desc { font-size: 10px; color: var(--muted); line-height: 1.6; }
   .card-detail { font-size: 9px; color: var(--muted); opacity: 0.7; margin-top: 2px; }
+  .card-warn { font-size: 9px; color: var(--accent3); opacity: 0.9; margin-top: 4px; font-weight: 600; }
 
   .c-blue .card-service { background: rgba(56,189,248,0.1); color: var(--accent); }
   .c-green .card-service { background: rgba(52,211,153,0.1); color: var(--accent2); }
@@ -105,95 +74,43 @@
   .c-purple .card-service { background: rgba(167,139,250,0.1); color: var(--accent4); }
   .c-pink .card-service { background: rgba(244,114,182,0.1); color: var(--accent5); }
 
-  .card::before {
-    content: '';
-    position: absolute; top: 0; left: 0; right: 0;
-    height: 2px;
-  }
+  .card::before { content: ''; position: absolute; top: 0; left: 0; right: 0; height: 2px; }
   .c-blue::before { background: var(--accent); }
   .c-green::before { background: var(--accent2); }
   .c-orange::before { background: var(--accent3); }
   .c-purple::before { background: var(--accent4); }
   .c-pink::before { background: var(--accent5); }
 
-  /* Arrow connector between rows */
-  .arrow-strip {
-    display: grid;
-    grid-template-columns: 120px 1fr;
-    height: 40px;
-    border-bottom: 1px solid var(--border);
-  }
+  .arrow-strip { display: grid; grid-template-columns: 120px 1fr; height: 40px; border-bottom: 1px solid var(--border); }
   .arrow-left { border-right: 1px solid var(--border); }
-  .arrow-right {
-    display: flex; align-items: center; padding: 0 22px; gap: 10px;
-    font-size: 10px; font-weight: 600; letter-spacing: 1px;
-  }
+  .arrow-right { display: flex; align-items: center; padding: 0 22px; gap: 10px; font-size: 10px; font-weight: 600; letter-spacing: 1px; }
   .arrow-dot { width: 7px; height: 7px; border-radius: 50%; flex-shrink: 0; animation: pulse 2s infinite; }
-  .arrow-line-el {
-    flex: 1; height: 1px;
-    background: linear-gradient(90deg, currentColor, transparent);
-    opacity: 0.25;
-  }
+  .arrow-line-el { flex: 1; height: 1px; background: linear-gradient(90deg, currentColor, transparent); opacity: 0.25; }
   .a-blue { color: var(--accent); }
   .a-green { color: var(--accent2); }
   .a-orange { color: var(--accent3); }
   .a-purple { color: var(--accent4); }
 
-  /* Call flow panel */
-  .panels {
-    display: grid;
-    grid-template-columns: 1fr 1fr;
-    gap: 16px;
-    margin-top: 20px;
-    animation: fadeUp 0.5s 0.35s ease both;
-  }
-  .panel {
-    background: var(--surface);
-    border: 1px solid var(--border);
-    border-radius: 10px;
-    overflow: hidden;
-  }
-  .panel-head {
-    padding: 12px 18px;
-    border-bottom: 1px solid var(--border);
-    font-family: 'Syne', sans-serif;
-    font-size: 12px; font-weight: 700;
-    display: flex; align-items: center; gap: 8px;
-  }
+  .panels { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; margin-top: 20px; animation: fadeUp 0.5s 0.35s ease both; }
+  .panel { background: var(--surface); border: 1px solid var(--border); border-radius: 10px; overflow: hidden; }
+  .panel-head { padding: 12px 18px; border-bottom: 1px solid var(--border); font-family: 'Syne', sans-serif; font-size: 12px; font-weight: 700; display: flex; align-items: center; gap: 8px; }
   .panel-body { padding: 16px 18px; display: flex; flex-direction: column; gap: 0; }
 
-  .step-row {
-    display: flex; gap: 12px; align-items: flex-start;
-    padding: 9px 0;
-    border-bottom: 1px solid rgba(26,45,66,0.6);
-  }
+  .step-row { display: flex; gap: 12px; align-items: flex-start; padding: 9px 0; border-bottom: 1px solid rgba(26,45,66,0.6); }
   .step-row:last-child { border-bottom: none; }
-  .snum {
-    width: 20px; height: 20px; border-radius: 50%;
-    font-size: 9px; font-weight: 700;
-    display: flex; align-items: center; justify-content: center;
-    flex-shrink: 0; margin-top: 1px;
-  }
-  .snum.blue { background: rgba(56,189,248,0.12); color: var(--accent); border: 1px solid rgba(56,189,248,0.3); }
-  .snum.green { background: rgba(52,211,153,0.1); color: var(--accent2); border: 1px solid rgba(52,211,153,0.25); }
-  .snum.orange { background: rgba(251,146,60,0.1); color: var(--accent3); border: 1px solid rgba(251,146,60,0.25); }
+  .snum { width: 20px; height: 20px; border-radius: 50%; font-size: 9px; font-weight: 700; display: flex; align-items: center; justify-content: center; flex-shrink: 0; margin-top: 1px; }
+  .snum.blue   { background: rgba(56,189,248,0.12); color: var(--accent);  border: 1px solid rgba(56,189,248,0.3); }
+  .snum.green  { background: rgba(52,211,153,0.1);  color: var(--accent2); border: 1px solid rgba(52,211,153,0.25); }
+  .snum.orange { background: rgba(251,146,60,0.1);  color: var(--accent3); border: 1px solid rgba(251,146,60,0.25); }
   .snum.purple { background: rgba(167,139,250,0.1); color: var(--accent4); border: 1px solid rgba(167,139,250,0.25); }
-  .snum.pink { background: rgba(244,114,182,0.1); color: var(--accent5); border: 1px solid rgba(244,114,182,0.25); }
+  .snum.pink   { background: rgba(244,114,182,0.1); color: var(--accent5); border: 1px solid rgba(244,114,182,0.25); }
 
   .stxt { font-size: 10px; color: var(--muted); line-height: 1.7; }
   .stxt strong { color: var(--text); }
   .stxt code { font-size: 9px; color: var(--accent4); background: rgba(167,139,250,0.08); padding: 1px 5px; border-radius: 3px; }
+  .stxt .warn { color: var(--accent3); font-weight: 600; }
 
-  /* AD Group callout */
-  .group-callout {
-    margin-top: 16px;
-    background: var(--surface);
-    border: 1px solid var(--border);
-    border-left: 3px solid var(--accent2);
-    border-radius: 10px;
-    padding: 18px 20px;
-    animation: fadeUp 0.5s 0.45s ease both;
-  }
+  .group-callout { margin-top: 16px; background: var(--surface); border: 1px solid var(--border); border-left: 3px solid var(--accent2); border-radius: 10px; padding: 18px 20px; animation: fadeUp 0.5s 0.45s ease both; }
   .group-callout h3 { font-family: 'Syne', sans-serif; font-size: 12px; font-weight: 700; color: var(--accent2); margin-bottom: 10px; }
   .group-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 12px; }
   .group-item { background: rgba(0,0,0,0.25); border: 1px solid var(--border); border-radius: 6px; padding: 12px; }
@@ -201,20 +118,15 @@
   .group-item .gi-val { font-size: 11px; color: var(--text); }
   .group-item .gi-sub { font-size: 9px; color: var(--muted); margin-top: 3px; line-height: 1.5; }
 
-  /* Ownership strip */
-  .ownership {
-    margin-top: 16px;
-    display: grid;
-    grid-template-columns: 1fr 1fr;
-    gap: 16px;
-    animation: fadeUp 0.5s 0.5s ease both;
-  }
-  .own-card {
-    background: var(--surface);
-    border: 1px solid var(--border);
-    border-radius: 10px;
-    padding: 16px 18px;
-  }
+  /* Callout banners */
+  .callout { margin-top: 16px; border-radius: 10px; padding: 14px 18px; font-size: 10px; line-height: 1.7; border: 1px solid; animation: fadeUp 0.5s 0.48s ease both; }
+  .callout.warn { background: rgba(251,146,60,0.07); border-color: rgba(251,146,60,0.25); color: var(--accent3); }
+  .callout.info { background: rgba(56,189,248,0.05); border-color: rgba(56,189,248,0.2); color: var(--accent); }
+  .callout strong { font-weight: 700; }
+  .callout code { font-size: 9px; background: rgba(0,0,0,0.3); padding: 1px 5px; border-radius: 3px; }
+
+  .ownership { margin-top: 16px; display: grid; grid-template-columns: 1fr 1fr; gap: 16px; animation: fadeUp 0.5s 0.5s ease both; }
+  .own-card { background: var(--surface); border: 1px solid var(--border); border-radius: 10px; padding: 16px 18px; }
   .own-card h3 { font-family: 'Syne', sans-serif; font-size: 11px; font-weight: 700; margin-bottom: 10px; display: flex; align-items: center; gap: 6px; }
   .own-list { display: flex; flex-direction: column; gap: 5px; }
   .own-item { font-size: 10px; color: var(--muted); padding-left: 12px; position: relative; line-height: 1.5; }
@@ -242,6 +154,14 @@
     <p class="sub">Caller speaks a name → Azure Speech Recognition transcribes it → Graph API fuzzy-matches against an Azure AD Security Group → Direct Routing transfers the call to that Teams user. Every resource lives in the customer's Azure subscription.</p>
   </div>
 
+  <!-- ── Key deployment notes ── -->
+  <div class="callout warn" style="margin-bottom:16px; animation: fadeUp 0.4s 0.05s ease both;">
+    <strong>⚠ Deployment notes:</strong>
+    ACS resources must be provisioned with <code>--location global</code> (not a regional value) — data residency is set separately via <code>--data-location</code>.
+    The <code>acs_callback_url</code> in App Configuration must include <code>?code=YOUR-FUNCTION-KEY</code> — without it, ACS mid-call events receive HTTP 401 and the bot cannot process speech or complete transfers.
+    Teams notifications use <strong>Power Automate</strong> webhook URLs — Office 365 Connector URLs (<code>*.webhook.office.com</code>) are deprecated.
+  </div>
+
   <!-- ── Main tenant diagram ── -->
   <div class="tenant-wrapper">
     <div class="tenant-header">
@@ -263,14 +183,15 @@
           <div class="card c-blue">
             <div class="card-top"><span class="card-icon">🏢</span><span class="card-name">Teams Resource Account</span></div>
             <div class="card-service">Teams Admin Center</div>
-            <div class="card-desc">Phone number entry point. Licensed with Teams Phone Resource Account license. Routes call to ACS via Direct Routing.</div>
+            <div class="card-desc">Phone number entry point. Requires <strong>Teams Phone Resource Account</strong> license (free). ACS linkage via PowerShell only — not possible in Teams Admin Center UI.</div>
             <div class="card-detail">reception@customer.com</div>
           </div>
           <div class="card c-blue">
             <div class="card-top"><span class="card-icon">📡</span><span class="card-name">Azure Communication Services</span></div>
             <div class="card-service">ACS · Call Automation</div>
-            <div class="card-desc">Receives the inbound call. Fires IncomingCall webhook to the Python Function App in the same tenant.</div>
+            <div class="card-desc">Receives the inbound call. Fires IncomingCall webhook to the Python Function App. Must be provisioned with <code>location=global</code>.</div>
             <div class="card-detail">customer-acs.communication.azure.com</div>
+            <div class="card-warn">location: global (not regional)</div>
           </div>
         </div>
       </div>
@@ -291,19 +212,20 @@
           <div class="card c-orange">
             <div class="card-top"><span class="card-icon">⚡</span><span class="card-name">Azure Function App</span></div>
             <div class="card-service">Python 3.11</div>
-            <div class="card-desc">HTTP-triggered webhook. Answers the call, plays greeting, starts speech recognition session.</div>
+            <div class="card-desc">HTTP-triggered webhook. Answers call, plays greeting, starts speech recognition. Mid-call events (RecognizeCompleted, PlayCompleted, TransferAccepted) POST to <code>/api/acs_callback?code=KEY</code>.</div>
             <div class="card-detail">customer-receptionist.azurewebsites.net</div>
+            <div class="card-warn">acs_callback_url must include ?code=</div>
           </div>
           <div class="card c-orange">
             <div class="card-top"><span class="card-icon">🗣️</span><span class="card-name">Azure AI Speech</span></div>
             <div class="card-service">Cognitive Services</div>
-            <div class="card-desc">ACS streams audio to Azure Speech. Transcribes caller's spoken name in real time. Returns text to Function.</div>
+            <div class="card-desc">ACS streams audio to Azure Speech. Transcribes caller's spoken name in real time. Returns text to Function via RecognizeCompleted callback.</div>
             <div class="card-detail">customer-speech.cognitiveservices.azure.com</div>
           </div>
           <div class="card c-orange">
             <div class="card-top"><span class="card-icon">🔑</span><span class="card-name">Azure Key Vault</span></div>
             <div class="card-service">Secrets</div>
-            <div class="card-desc">Stores ACS connection string, client secret, Speech key. Function retrieves via Managed Identity — no hardcoded credentials.</div>
+            <div class="card-desc">Stores ACS connection string, client ID, client secret. Read at call time via Managed Identity — no caching, no restart needed after secret rotation.</div>
             <div class="card-detail">customer-receptionist-kv</div>
           </div>
         </div>
@@ -318,26 +240,26 @@
         </div>
       </div>
 
-      <!-- Row 3: Identity & Directory -->
+      <!-- Row 3: Identity -->
       <div class="flow-row">
         <div class="row-label" style="color:var(--accent2);">🆔 Identity</div>
         <div class="row-cards">
           <div class="card c-green">
             <div class="card-top"><span class="card-icon">🆔</span><span class="card-name">App Registration</span></div>
             <div class="card-service">Entra ID · App ID</div>
-            <div class="card-desc">Client credentials flow. Grants GroupMember.Read.All and User.Read.All. No user sign-in required.</div>
+            <div class="card-desc">Client credentials flow. Grants GroupMember.Read.All and User.Read.All. Permission GUIDs resolved from Graph SP at deploy time — not hardcoded.</div>
             <div class="card-detail">VirtualReceptionist · App ID: …</div>
           </div>
           <div class="card c-green">
             <div class="card-top"><span class="card-icon">👥</span><span class="card-name">Azure AD Security Group</span></div>
             <div class="card-service">Entra ID · Group</div>
-            <div class="card-desc">Contains all staff the receptionist can route to. Customer manages membership — add/remove users here, no code changes needed.</div>
+            <div class="card-desc">Contains all staff the receptionist can route to. Add or remove members here — no code changes needed. Supports groups larger than 999 members via Graph pagination.</div>
             <div class="card-detail">VirtualReceptionist-Staff · Group ID: …</div>
           </div>
           <div class="card c-green">
             <div class="card-top"><span class="card-icon">📊</span><span class="card-name">Microsoft Graph API</span></div>
             <div class="card-service">Graph v1.0</div>
-            <div class="card-desc">Bot calls GET /groups/{id}/members to load all staff names + AAD Object IDs. Fuzzy matches spoken name. Returns best match.</div>
+            <div class="card-desc">Bot calls GET /groups/{id}/members with pagination. Loads display names, AAD Object IDs, and extensionAttribute1 (TTS pronunciation overrides). 5-minute cache.</div>
             <div class="card-detail">graph.microsoft.com/v1.0</div>
           </div>
         </div>
@@ -359,19 +281,19 @@
           <div class="card c-purple">
             <div class="card-top"><span class="card-icon">🔀</span><span class="card-name">ACS Direct Routing Transfer</span></div>
             <div class="card-service">Call Automation SDK</div>
-            <div class="card-desc">transferCallToParticipant() using MicrosoftTeamsUserIdentifier with matched AAD Object ID. Pure Teams Direct Routing.</div>
+            <div class="card-desc">Transfer initiated after PlayCompleted event (no race condition). Uses <code>MicrosoftTeamsUserIdentifier</code> with matched AAD Object ID. Imported from top-level SDK package.</div>
           </div>
           <div class="card c-purple">
             <div class="card-top"><span class="card-icon">💬</span><span class="card-name">Target Teams User</span></div>
             <div class="card-service">Teams Direct Routing</div>
-            <div class="card-desc">Staff member receives call in their Teams client. Call transferred directly — no intermediate queue.</div>
+            <div class="card-desc">Staff member receives call in their Teams client. Call transferred directly — no intermediate queue. Target must have a Teams Phone license.</div>
             <div class="card-detail">john.smith@customer.com</div>
           </div>
           <div class="card c-pink">
             <div class="card-top"><span class="card-icon">🛎️</span><span class="card-name">Default Reception</span></div>
             <div class="card-service">Fallback</div>
-            <div class="card-desc">If name not matched or transfer fails, call routes to this configured reception/operator Teams user.</div>
-            <div class="card-detail">reception@customer.com · AAD ID hardcoded</div>
+            <div class="card-desc">If name not matched, directory unavailable, or transfer fails — call routes to this configured reception Teams user. AAD Object ID stored in App Configuration.</div>
+            <div class="card-detail">reception@customer.com · configured in App Config</div>
           </div>
         </div>
       </div>
@@ -380,21 +302,21 @@
       <div class="flow-row">
         <div class="row-label" style="color:var(--muted);">📋 Logs</div>
         <div class="row-cards">
-          <div class="card c-blue" style="border-top-color:var(--muted);">
+          <div class="card c-blue" style="--accent:var(--muted);">
             <div class="card-top"><span class="card-icon">📈</span><span class="card-name">App Insights</span></div>
             <div class="card-service">Azure Monitor</div>
-            <div class="card-desc">All call events, speech transcriptions, match results, and transfer outcomes logged. 90-day retention.</div>
+            <div class="card-desc">All call events, match results, and transfer outcomes logged. Speech content not logged (PII). 90-day retention.</div>
             <div class="card-detail">customer-receptionist-ai</div>
           </div>
-          <div class="card c-blue" style="border-top-color:var(--muted);">
+          <div class="card c-blue" style="--accent:var(--muted);">
             <div class="card-top"><span class="card-icon">📋</span><span class="card-name">ACS Call Logs</span></div>
             <div class="card-service">Diagnostics</div>
             <div class="card-desc">ACS resource logs: call duration, direction, transfer outcomes. Stored in customer's Log Analytics workspace.</div>
           </div>
-          <div class="card c-blue" style="border-top-color:var(--muted);">
-            <div class="card-top"><span class="card-icon">🔔</span><span class="card-name">Alerts</span></div>
+          <div class="card c-blue" style="--accent:var(--muted);">
+            <div class="card-top"><span class="card-icon">🔔</span><span class="card-name">Alerts → Power Automate</span></div>
             <div class="card-service">Azure Monitor</div>
-            <div class="card-desc">Alert on repeated transfer failures or speech recognition errors. Notifies customer IT admin by email.</div>
+            <div class="card-desc">Alerts on transfer failures, speech errors, exceptions, Key Vault failures. Teams notifications via Power Automate webhook — not deprecated O365 connectors.</div>
           </div>
         </div>
       </div>
@@ -402,19 +324,19 @@
     </div>
   </div>
 
-  <!-- ── AD Group + Call flow panels ── -->
+  <!-- ── Call flow + permissions panels ── -->
   <div class="panels">
     <div class="panel">
       <div class="panel-head">☎️ <span style="color:var(--accent)">Call Flow — Step by Step</span></div>
       <div class="panel-body">
         <div class="step-row"><div class="snum blue">1</div><div class="stxt"><strong>Caller dials</strong> the Teams resource account phone number (PSTN Direct Routing).</div></div>
-        <div class="step-row"><div class="snum blue">2</div><div class="stxt">ACS receives the call via <strong>Teams interop</strong> and fires <code>IncomingCall</code> to Function App.</div></div>
-        <div class="step-row"><div class="snum orange">3</div><div class="stxt">Function answers call. ACS TTS plays: <em>"Welcome to [Company]. Please say the name of the person you'd like to speak to."</em></div></div>
-        <div class="step-row"><div class="snum orange">4</div><div class="stxt"><strong>ACS Speech Recognition</strong> listens. Caller speaks a name (e.g. "Sarah Jones").</div></div>
-        <div class="step-row"><div class="snum green">5</div><div class="stxt">Function queries <strong>Graph API</strong>: <code>GET /groups/{id}/members</code> — loads all staff display names + AAD Object IDs.</div></div>
-        <div class="step-row"><div class="snum green">6</div><div class="stxt"><strong>Fuzzy match</strong> (difflib / rapidfuzz) finds closest name. Confidence threshold checked (&gt;70%).</div></div>
-        <div class="step-row"><div class="snum orange">7</div><div class="stxt">TTS confirms: <em>"Connecting you to Sarah Jones."</em> — or <em>"Sorry, I couldn't find that person. Transferring to reception."</em></div></div>
-        <div class="step-row"><div class="snum purple">8</div><div class="stxt"><strong>Direct Routing transfer</strong> via <code>transferCallToParticipant(MicrosoftTeamsUserIdentifier)</code>.</div></div>
+        <div class="step-row"><div class="snum blue">2</div><div class="stxt">ACS receives the call and fires <code>IncomingCall</code> to <code>/api/incoming_call?code=KEY</code>.</div></div>
+        <div class="step-row"><div class="snum orange">3</div><div class="stxt">Function answers call. ACS TTS plays greeting via SSML. Speech recognition starts.</div></div>
+        <div class="step-row"><div class="snum orange">4</div><div class="stxt"><strong>ACS Speech Recognition</strong> listens. Caller speaks a name. <code>RecognizeCompleted</code> fires to <code>/api/acs_callback?code=KEY</code>.</div></div>
+        <div class="step-row"><div class="snum green">5</div><div class="stxt">Function queries <strong>Graph API</strong>: loads staff names + AAD Object IDs from AD Security Group (paginated, 5-min cache).</div></div>
+        <div class="step-row"><div class="snum green">6</div><div class="stxt"><strong>Three-stage match</strong>: Exact → Soundex phonetic → rapidfuzz fuzzy. Confidence margin check prevents false positives.</div></div>
+        <div class="step-row"><div class="snum orange">7</div><div class="stxt">TTS confirms: <em>"Connecting you to Sarah Jones."</em> Transfer stored in <code>_pending_transfers</code> dict. <code>PlayCompleted</code> fires.</div></div>
+        <div class="step-row"><div class="snum purple">8</div><div class="stxt">On <code>PlayCompleted</code>, transfer initiated via <code>transferCallToParticipant(MicrosoftTeamsUserIdentifier)</code>. No race condition.</div></div>
         <div class="step-row"><div class="snum purple">9</div><div class="stxt">Call arrives in <strong>staff member's Teams client</strong>. Event logged to App Insights.</div></div>
       </div>
     </div>
@@ -422,15 +344,22 @@
     <div class="panel">
       <div class="panel-head">🔑 <span style="color:var(--accent2)">App Permissions Required</span></div>
       <div class="panel-body">
-        <div class="step-row"><div class="snum green">✓</div><div class="stxt"><strong style="color:var(--accent)">GroupMember.Read.All</strong> — Application<br/>Read members of the AD security group to build the staff directory.</div></div>
-        <div class="step-row"><div class="snum green">✓</div><div class="stxt"><strong style="color:var(--accent)">User.Read.All</strong> — Application<br/>Read display names and profile info of matched users.</div></div>
+        <div class="step-row"><div class="snum green">✓</div><div class="stxt"><strong style="color:var(--accent)">GroupMember.Read.All</strong> — Application<br/>Read members of the AD security group.</div></div>
+        <div class="step-row"><div class="snum green">✓</div><div class="stxt"><strong style="color:var(--accent)">User.Read.All</strong> — Application<br/>Read display names, extensionAttribute1 (pronunciation).</div></div>
         <div class="step-row"><div class="snum green">✓</div><div class="stxt"><strong style="color:var(--accent)">Calls.Initiate.All</strong> — Application<br/>Allows the bot to initiate and control calls via ACS.</div></div>
         <div class="step-row"><div class="snum green">✓</div><div class="stxt"><strong style="color:var(--accent)">Calls.JoinGroupCall.All</strong> — Application<br/>Manage group calls within the Teams tenant.</div></div>
         <div class="step-row"><div class="snum green">✓</div><div class="stxt"><strong style="color:var(--accent)">Presence.Read.All</strong> — Application<br/>Optional: check if user is Available before transferring.</div></div>
-        <div class="step-row"><div class="snum pink">!</div><div class="stxt">All permissions are <strong>Application type</strong> (not Delegated). <strong>Admin Consent required</strong> from Global Admin before bot can operate.</div></div>
-        <div class="step-row"><div class="snum orange">🔑</div><div class="stxt">Function App uses <strong>System-assigned Managed Identity</strong> to pull secrets from Key Vault — no credentials in code or config files.</div></div>
+        <div class="step-row"><div class="snum pink">!</div><div class="stxt">All permissions are <strong>Application type</strong> (not Delegated). <strong>Admin Consent required</strong> from Global Admin.</div></div>
+        <div class="step-row"><div class="snum orange">🔑</div><div class="stxt">Permission GUIDs are <strong>resolved from Graph SP at deploy time</strong> — not hardcoded. Ensures correctness across tenants.</div></div>
+        <div class="step-row"><div class="snum orange">🏷️</div><div class="stxt">Function App uses <strong>System-assigned Managed Identity</strong> for Key Vault and App Config — no credentials in code.</div></div>
       </div>
     </div>
+  </div>
+
+  <!-- Known limitations callout -->
+  <div class="callout warn">
+    <strong>⚠ Scale-out limitation — _pending_transfers dict:</strong>
+    The bot uses a module-level dict to track pending transfers between the "Connecting you to…" prompt and the actual transfer call. This is correct for a single Function App instance. If the Consumption plan scales out, a <code>PlayCompleted</code> callback may arrive on a different instance than the one that stored the transfer, silently dropping it. At typical receptionist call volumes (one concurrent call) this is not a practical problem. For high-volume deployments, replace <code>_pending_transfers</code> with Azure Table Storage keyed on <code>callConnectionId</code>.
   </div>
 
   <!-- AD Group detail -->
@@ -445,27 +374,27 @@
       <div class="group-item">
         <div class="gi-label">Adding a new staff member</div>
         <div class="gi-val">Add them to the group</div>
-        <div class="gi-sub">Azure AD → Groups → VirtualReceptionist-Staff → Members → Add. No code changes, no redeployment.</div>
+        <div class="gi-sub">Azure AD → Groups → VirtualReceptionist-Staff → Members → Add. No code changes, no redeployment. Live within 5 minutes.</div>
       </div>
       <div class="group-item">
         <div class="gi-label">Removing a leaver</div>
         <div class="gi-val">Remove from group</div>
-        <div class="gi-sub">Remove from group membership. Bot will no longer match their name on the next call. Instant effect.</div>
+        <div class="gi-sub">Bot will no longer match their name on the next call. Instant effect after 5-minute cache expires.</div>
       </div>
       <div class="group-item">
         <div class="gi-label">What Graph returns</div>
         <div class="gi-val">displayName + id</div>
-        <div class="gi-sub">Bot loads displayName for fuzzy matching and id (AAD Object ID) for the transfer target.</div>
+        <div class="gi-sub">Bot loads displayName for fuzzy matching and Object ID for the transfer target. extensionAttribute1 for TTS pronunciation override.</div>
       </div>
       <div class="group-item">
         <div class="gi-label">Fuzzy match threshold</div>
-        <div class="gi-val">&gt; 70% confidence</div>
-        <div class="gi-sub">Below threshold → transfer to default reception. Configurable in CONFIG block.</div>
+        <div class="gi-val">&gt; 65% confidence</div>
+        <div class="gi-sub">Below threshold → transfer to default reception. Configurable via App Configuration key <code>receptionist:match_threshold</code>.</div>
       </div>
       <div class="group-item">
-        <div class="gi-label">Graph API caching</div>
-        <div class="gi-val">5-minute in-memory cache</div>
-        <div class="gi-sub">Group members cached per function instance to reduce Graph API calls on high call volumes.</div>
+        <div class="gi-label">Pagination</div>
+        <div class="gi-val">Supports &gt;999 members</div>
+        <div class="gi-sub">Graph returns up to 999 members per page. Bot follows @odata.nextLink for groups larger than 999 members.</div>
       </div>
     </div>
   </div>
@@ -481,21 +410,23 @@
         <div class="own-item you">Key Vault + all secrets</div>
         <div class="own-item you">Function App (hosts the Python bot)</div>
         <div class="own-item you">Azure AD Security Group membership</div>
-        <div class="own-item you">Teams resource account</div>
+        <div class="own-item you">Teams resource account + license</div>
         <div class="own-item you">All call logs &amp; App Insights data</div>
+        <div class="own-item you">Power Automate flow for Teams alerts</div>
       </div>
     </div>
     <div class="own-card">
       <h3>🛠 <span style="color:var(--accent)">You (provider) supply &amp; maintain</span></h3>
       <div class="own-list">
-        <div class="own-item you">Python bot source code (receptionist.py)</div>
-        <div class="own-item you">This onboarding runbook</div>
+        <div class="own-item you">Python bot source code</div>
+        <div class="own-item you">PowerShell deployment scripts</div>
+        <div class="own-item you">This architecture documentation</div>
         <div class="own-item you">Initial deployment &amp; configuration</div>
-        <div class="own-item you">CONFIG block edits per customer</div>
+        <div class="own-item you">appconfig-seed.json per customer</div>
         <div class="own-item you">Code updates &amp; patches</div>
         <div class="own-item you">Support &amp; troubleshooting</div>
         <div class="own-item">Customer manages their own AD group</div>
-        <div class="own-item">Customer IT renews secrets before expiry</div>
+        <div class="own-item">Customer IT rotates secrets before expiry</div>
       </div>
     </div>
   </div>

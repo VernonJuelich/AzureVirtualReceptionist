@@ -19,18 +19,27 @@ class PendingTransferStore:
         )
         if not self._connection_string:
             raise EnvironmentError(
-                "AzureWebJobsStorage is not set. It is required for durable pending transfer state."
+                "AzureWebJobsStorage is not set. "
+                "It is required for durable pending transfer state."
             )
 
-        self._service = TableServiceClient.from_connection_string(self._connection_string)
+        self._service = TableServiceClient.from_connection_string(
+            self._connection_string)
         try:
             self._service.create_table(table_name=self.TABLE_NAME)
         except Exception:
             pass  # Table already exists
         self._table = self._service.get_table_client(self.TABLE_NAME)
 
-    def save(self, call_connection_id: str, aad_id: str, display_name: str, ttl_minutes: int = 30):
-        expires_utc = (datetime.now(timezone.utc) + timedelta(minutes=ttl_minutes)).isoformat()
+    def save(
+            self,
+            call_connection_id: str,
+            aad_id: str,
+            display_name: str,
+            ttl_minutes: int = 30):
+        expires_utc = (
+            datetime.now(timezone.utc) + timedelta(minutes=ttl_minutes)
+        ).isoformat()
         entity = {
             "PartitionKey": self.PARTITION_KEY,
             "RowKey": call_connection_id,
@@ -39,7 +48,9 @@ class PendingTransferStore:
             "expires_utc": expires_utc,
         }
         self._table.upsert_entity(mode=UpdateMode.MERGE, entity=entity)
-        logger.info("Saved pending transfer state for call_connection_id=%s", call_connection_id)
+        logger.info(
+            "Saved pending transfer state for call_connection_id=%s",
+            call_connection_id)
 
     def get(self, call_connection_id: str) -> Optional[Dict[str, str]]:
         try:
@@ -81,6 +92,8 @@ class PendingTransferStore:
                 partition_key=self.PARTITION_KEY,
                 row_key=call_connection_id,
             )
-            logger.info("Deleted pending transfer state for call_connection_id=%s", call_connection_id)
+            logger.info(
+                "Deleted pending transfer state for call_connection_id=%s",
+                call_connection_id)
         except Exception:
             pass

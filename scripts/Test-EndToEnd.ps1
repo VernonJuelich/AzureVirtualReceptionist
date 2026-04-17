@@ -44,13 +44,28 @@ function Test-Step {
 Write-Host "`n=== Virtual Receptionist — Smoke Tests ===" -ForegroundColor Cyan
 Write-Host "Function App: $FunctionAppName`n"
 
-# Get function key
-$FnKey = az functionapp keys list `
+# Retrieve function key via Kudu SCM API — works independently of Functions
+# runtime initialisation state, unlike az functionapp keys list which can
+# fail if the host hasn't finished starting after a cold deploy.
+Write-Host "Retrieving function key via Kudu SCM API..." -ForegroundColor DarkGray
+
+$Creds = az functionapp deployment list-publishing-credentials `
     --name           $FunctionAppName `
     --resource-group $ResourceGroup `
-    --query          "functionKeys.default" `
+    --query          "[publishingUserName, publishingPassword]" `
     --output         tsv
 
+$KuduUser = ($Creds -split "`n")[0].Trim()
+$KuduPass = ($Creds -split "`n")[1].Trim()
+$AuthHeader = "Basic " + [Convert]::ToBase64String(
+    [Text.Encoding]::ASCII.GetBytes("${KuduUser}:${KuduPass}"))
+
+$MasterKeyResponse = Invoke-RestMethod `
+    -Uri     "https://$FunctionAppName.scm.azurewebsites.net/api/functions/admin/masterkey" `
+    -Method  Get `
+    -Headers @{ Authorization = $AuthHeader }
+
+$FnKey   = $MasterKeyResponse.masterKey
 $BaseUrl = "https://$FunctionAppName.azurewebsites.net/api"
 
 # ── Test 1: Function App reachable ────────────────────────────
@@ -60,8 +75,6 @@ Test-Step "Function App reachable" {
 }
 
 # ── Test 2: Health returns OK ─────────────────────────────────
-# NOTE: The health endpoint returns only {status, company} — it deliberately
-# omits timezone and voice to limit information exposure. Do not assert those.
 Test-Step "Health endpoint returns OK" {
     $r = Invoke-RestMethod -Uri "$BaseUrl/health?code=$FnKey" -Method Get -TimeoutSec 15 -ErrorAction Stop
     if ($r.status -ne "ok") { throw "Status: $($r.status)" }
@@ -83,16 +96,31 @@ Test-Step "App Configuration — required keys present" {
     if ($Missing) { throw "Missing keys: $($Missing -join ', ')" }
 }
 
-# ── Test 4: Key Vault accessible ─────────────────────────────
+# ── Test 4: acs_callback_url contains a function key ─────────
+Test-Step "acs_callback_url includes function key (?code=)" {
+    $AppConfigName = az appconfig list --resource-group $ResourceGroup --query "[0].name" --output tsv
+    $CallbackUrl = az appconfig kv show `
+        --name  $AppConfigName `
+        --key   "receptionist:acs_callback_url" `
+        --query "value" --output tsv
+    if ($CallbackUrl -notmatch '\?code=') {
+        throw "acs_callback_url is missing '?code=...' — ACS mid-call events will receive HTTP 401"
+    }
+    if ($CallbackUrl -match 'REPLACE') {
+        throw "acs_callback_url still contains placeholder text — update it with the real function key"
+    }
+}
+
+# ── Test 5: Key Vault accessible ─────────────────────────────
 Test-Step "Key Vault secrets accessible" {
-    $KvName = az keyvault list --resource-group $ResourceGroup --query "[0].name" --output tsv
+    $KvName  = az keyvault list --resource-group $ResourceGroup --query "[0].name" --output tsv
     $Secrets = az keyvault secret list --vault-name $KvName --query "[].name" --output json | ConvertFrom-Json
     $Required = @("acs-connection-string", "app-client-id", "app-client-secret")
     $Missing = $Required | Where-Object { $Secrets -notcontains $_ }
     if ($Missing) { throw "Missing secrets: $($Missing -join ', ')" }
 }
 
-# ── Test 5: Function App has correct app settings ────────────
+# ── Test 6: Function App has correct app settings ────────────
 Test-Step "Function App app settings configured" {
     $Settings = az functionapp config appsettings list `
         --name           $FunctionAppName `
@@ -104,7 +132,7 @@ Test-Step "Function App app settings configured" {
     }
 }
 
-# ── Test 6: Managed Identity enabled ─────────────────────────
+# ── Test 7: Managed Identity enabled ─────────────────────────
 Test-Step "Managed Identity enabled" {
     $Identity = az functionapp identity show `
         --name           $FunctionAppName `
@@ -113,11 +141,14 @@ Test-Step "Managed Identity enabled" {
     if (-not $Identity.principalId) { throw "System-assigned Managed Identity not enabled" }
 }
 
-# ── Test 7: App Insights connected ───────────────────────────
+# ── Test 8: App Insights connected ───────────────────────────
 Test-Step "App Insights connected" {
-    $AiName = az resource list --resource-group $ResourceGroup --resource-type "Microsoft.Insights/components" --query "[0].name" --output tsv
+    $AiName = az resource list `
+        --resource-group  $ResourceGroup `
+        --resource-type   "Microsoft.Insights/components" `
+        --query           "[0].name" `
+        --output          tsv
     if (-not $AiName) { throw "No App Insights found in $ResourceGroup" }
-    # Just checks it exists — live telemetry requires an actual call
 }
 
 # ── Summary ───────────────────────────────────────────────────

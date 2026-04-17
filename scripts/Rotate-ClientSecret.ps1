@@ -7,17 +7,13 @@
     Run this every 24 months (before the current secret expires).
 
     Steps:
-      1. Creates a new client secret on the App Registration
-      2. Updates the secret in Key Vault
-      3. Verifies the Function App can still reach Key Vault
-      4. Removes the old secret from the App Registration
-      5. Sends a confirmation to the Teams channel
-
-    Fixes applied:
-      [Issue 10] The new client secret is now written to a temporary file and
-                 passed to Key Vault via --file, preventing the secret value
-                 from appearing in shell history or process listings. The temp
-                 file is deleted immediately after the Key Vault update.
+      1. Lists existing secrets and records key IDs
+      2. Creates a new client secret (--append keeps old one valid during transition)
+      3. Updates Key Vault via temp file — secret never appears in shell history
+      4. Verifies the Function App health endpoint (no restart required — the bot
+         reads the secret from Key Vault at call time with no caching)
+      5. Removes the old secret from the App Registration
+      6. Sends a confirmation to Teams (optional)
 
 .PARAMETER AppObjectId
     The App Registration Object ID (NOT client ID).
@@ -27,13 +23,13 @@
     Name of the Key Vault to update.
 
 .PARAMETER FunctionAppName
-    Function App name — used to restart and verify after rotation.
+    Function App name — used for the health check verification step.
 
 .PARAMETER ResourceGroup
     Resource group name.
 
 .PARAMETER TeamsWebhookUrl
-    Optional Teams channel webhook to notify on completion.
+    Optional Power Automate workflow webhook URL to notify on completion.
 
 .EXAMPLE
     .\Rotate-ClientSecret.ps1 `
@@ -60,25 +56,27 @@ Write-Host "App Object ID:  $AppObjectId"
 Write-Host "Key Vault:      $KeyVaultName"
 Write-Host "Function App:   $FunctionAppName`n"
 
-# ── List current secrets ──────────────────────────────────────
+# ── Step 1: List current secrets ─────────────────────────────
 Write-Host "[1/5] Checking existing secrets..." -ForegroundColor Yellow
 $Existing = az ad app credential list --id $AppObjectId --output json | ConvertFrom-Json
 
 foreach ($s in $Existing) {
     $Expiry   = [datetime]$s.endDateTime
     $DaysLeft = ($Expiry - (Get-Date)).Days
-    Write-Host "    Existing secret: key=$($s.keyId) expires=$($Expiry.ToString('yyyy-MM-dd')) ($DaysLeft days)"
+    Write-Host "    Existing secret: keyId=$($s.keyId) expires=$($Expiry.ToString('yyyy-MM-dd')) ($DaysLeft days)"
 }
 
-$OldKeyId = $Existing | Sort-Object endDateTime | Select-Object -Last 1 | Select-Object -ExpandProperty keyId
+$OldKeyId = $Existing | Sort-Object endDateTime | Select-Object -Last 1 |
+    Select-Object -ExpandProperty keyId
 
-# ── Create new secret ─────────────────────────────────────────
+# ── Step 2: Create new secret ─────────────────────────────────
 Write-Host "`n[2/5] Creating new client secret (24 month expiry)..." -ForegroundColor Yellow
+Write-Host "    Using --append so old secret remains valid until Step 5." -ForegroundColor DarkGray
 
 $NewSecretValue  = $null
 $NewSecretExpiry = $null
 
-if ($PSCmdlet.ShouldProcess($AppObjectId, "az ad app credential reset")) {
+if ($PSCmdlet.ShouldProcess($AppObjectId, "az ad app credential reset --append")) {
     $NewSecret = az ad app credential reset `
         --id     $AppObjectId `
         --years  2 `
@@ -90,15 +88,14 @@ if ($PSCmdlet.ShouldProcess($AppObjectId, "az ad app credential reset")) {
     Write-Host "    New secret created. Expires: $NewSecretExpiry" -ForegroundColor Green
 }
 
-# ── Update Key Vault ──────────────────────────────────────────
-# [Issue 10] Write secret to a temp file and use --file to keep the value out
-# of shell history and process listings. Temp file is deleted immediately.
+# ── Step 3: Update Key Vault ──────────────────────────────────
+# Write secret to temp file so value never appears in shell history or
+# process listings. Temp file is deleted immediately after the update.
 Write-Host "[3/5] Updating Key Vault secret 'app-client-secret'..." -ForegroundColor Yellow
 
 if ($PSCmdlet.ShouldProcess($KeyVaultName, "az keyvault secret set")) {
     $TempFile = [System.IO.Path]::GetTempFileName()
     try {
-        # Write without trailing newline to avoid corrupting the secret value
         [System.IO.File]::WriteAllText($TempFile, $NewSecretValue)
         az keyvault secret set `
             --vault-name $KeyVaultName `
@@ -109,35 +106,34 @@ if ($PSCmdlet.ShouldProcess($KeyVaultName, "az keyvault secret set")) {
     } finally {
         Remove-Item -Path $TempFile -Force -ErrorAction SilentlyContinue
     }
-
-    # Clear from memory as soon as it's stored
-    $NewSecretValue = $null
+    $NewSecretValue = $null  # Clear from memory
 }
 
-# ── Restart Function App to pick up new secret ───────────────
-Write-Host "[4/5] Restarting Function App..." -ForegroundColor Yellow
-
-if ($PSCmdlet.ShouldProcess($FunctionAppName, "az functionapp restart")) {
-    az functionapp restart `
-        --name           $FunctionAppName `
-        --resource-group $ResourceGroup `
-        --output         none
-
-    Write-Host "    Function App restarted." -ForegroundColor Green
-    Write-Host "    Waiting 60 seconds for startup..." -ForegroundColor DarkGray
-    Start-Sleep -Seconds 60
-}
-
-# ── Verify health endpoint ────────────────────────────────────
-Write-Host "[5/5] Verifying health endpoint..." -ForegroundColor Yellow
+# ── Step 4: Verify health endpoint ───────────────────────────
+# The bot reads the client secret from Key Vault at call time (no caching),
+# so no Function App restart is needed. A restart would cause unnecessary
+# downtime for any calls in progress.
+# Use Kudu SCM API for key retrieval — works independently of runtime state.
+Write-Host "[4/5] Verifying health endpoint (no restart required)..." -ForegroundColor Yellow
 
 try {
-    $FnKey = az functionapp keys list `
+    $Creds = az functionapp deployment list-publishing-credentials `
         --name           $FunctionAppName `
         --resource-group $ResourceGroup `
-        --query          "functionKeys.default" `
+        --query          "[publishingUserName, publishingPassword]" `
         --output         tsv
 
+    $KuduUser = ($Creds -split "`n")[0].Trim()
+    $KuduPass = ($Creds -split "`n")[1].Trim()
+    $AuthHeader = "Basic " + [Convert]::ToBase64String(
+        [Text.Encoding]::ASCII.GetBytes("${KuduUser}:${KuduPass}"))
+
+    $MasterKeyJson = Invoke-RestMethod `
+        -Uri     "https://$FunctionAppName.scm.azurewebsites.net/api/functions/admin/masterkey" `
+        -Method  Get `
+        -Headers @{ Authorization = $AuthHeader }
+
+    $FnKey     = $MasterKeyJson.masterKey
     $HealthUrl = "https://$FunctionAppName.azurewebsites.net/api/health?code=$FnKey"
     $Response  = Invoke-RestMethod -Uri $HealthUrl -Method Get -TimeoutSec 30
 
@@ -148,38 +144,37 @@ try {
     }
 } catch {
     Write-Warning "Health check failed: $_ — verify manually at /api/health"
+    Write-Warning "Key Vault has been updated. If health fails, check Managed Identity role assignments."
 }
 
-# ── Remove old secret ─────────────────────────────────────────
+# ── Step 5: Remove old secret ─────────────────────────────────
 if ($OldKeyId -and $PSCmdlet.ShouldProcess($OldKeyId, "Remove old client secret")) {
-    Write-Host "`nRemoving old secret (keyId=$OldKeyId)..." -ForegroundColor Yellow
+    Write-Host "[5/5] Removing old secret (keyId=$OldKeyId)..." -ForegroundColor Yellow
     az ad app credential delete --id $AppObjectId --key-id $OldKeyId --output none
     Write-Host "    Old secret removed." -ForegroundColor Green
+} else {
+    Write-Host "[5/5] No old secret to remove (or -WhatIf)." -ForegroundColor DarkGray
 }
 
 # ── Notify Teams ──────────────────────────────────────────────
+# Uses Power Automate webhook JSON payload — not deprecated MessageCard format.
 if ($TeamsWebhookUrl) {
-    $Card = @{
-        "@type"    = "MessageCard"
-        "@context" = "https://schema.org/extensions"
-        "summary"  = "Secret Rotation Complete"
-        "themeColor" = "00B050"
-        "title"    = "🔑 Client Secret Rotated Successfully"
-        "sections" = @(
-            @{
-                "facts" = @(
-                    @{ "name" = "Function App";      "value" = $FunctionAppName }
-                    @{ "name" = "New Expiry Date";   "value" = $NewSecretExpiry }
-                    @{ "name" = "Rotated By";        "value" = $env:USERNAME }
-                    @{ "name" = "Rotated At";        "value" = (Get-Date -Format "yyyy-MM-dd HH:mm UTC") }
-                    @{ "name" = "Next Rotation Due"; "value" = (Get-Date).AddMonths(22).ToString("yyyy-MM") }
-                )
-            }
-        )
-    } | ConvertTo-Json -Depth 5
+    $Payload = @{
+        status          = "Secret rotated"
+        app             = $FunctionAppName
+        new_expiry      = $NewSecretExpiry
+        rotated_by      = $env:USERNAME
+        rotated_at      = (Get-Date -Format "yyyy-MM-dd HH:mm UTC")
+        next_rotation   = (Get-Date).AddMonths(22).ToString("yyyy-MM")
+    } | ConvertTo-Json
 
-    Invoke-RestMethod -Uri $TeamsWebhookUrl -Method Post -Body $Card -ContentType "application/json" | Out-Null
-    Write-Host "Teams notification sent." -ForegroundColor DarkGray
+    try {
+        Invoke-RestMethod -Uri $TeamsWebhookUrl -Method Post `
+            -Body $Payload -ContentType "application/json" | Out-Null
+        Write-Host "Teams notification sent." -ForegroundColor DarkGray
+    } catch {
+        Write-Warning "Could not send Teams notification: $_"
+    }
 }
 
 Write-Host "`n=== Secret Rotation Complete ===" -ForegroundColor Green

@@ -2,9 +2,17 @@
 function_app.py
 ===============
 Azure Functions v2 Python entry point.
+This file MUST be named function_app.py for the Azure Functions
+runtime to discover the registered functions.
 
 All configuration is loaded from Azure App Configuration at runtime.
 Secrets are loaded from Azure Key Vault via Managed Identity.
+
+Note on event field names:
+  - EventGrid events use 'eventType' (e.g. SubscriptionValidationEvent,
+    IncomingCall delivered via EventGrid push)
+  - ACS callback events use 'type' (e.g. RecognizeCompleted, PlayCompleted)
+  Both are handled via _event_type() helper.
 """
 
 import json
@@ -14,9 +22,10 @@ from call_handler import CallHandler
 from config_loader import ConfigLoader
 
 logger = logging.getLogger(__name__)
-app = func.FunctionApp(http_auth_level=func.AuthLevel.ANONYMOUS)
+app = func.FunctionApp(http_auth_level=func.AuthLevel.FUNCTION)
 
 # Module-level singletons — reused across warm instances
+# Initialised lazily on first request
 _config: ConfigLoader = None
 _handler: CallHandler = None
 
@@ -29,6 +38,14 @@ def _get_handler() -> CallHandler:
     return _handler
 
 
+def _event_type(event: dict) -> str:
+    """
+    EventGrid uses 'eventType'; ACS callbacks use 'type'.
+    Check both so the same handler works for both sources.
+    """
+    return event.get("eventType") or event.get("type") or ""
+
+
 # ── Route 1: Incoming call webhook ───────────────────────────
 
 @app.route(route="incoming_call", methods=["POST"])
@@ -38,26 +55,19 @@ async def incoming_call(req: func.HttpRequest) -> func.HttpResponse:
     Handles EventGrid validation handshake and IncomingCall events.
     """
     try:
-        body = req.get_json()
-    except Exception as exc:
-        logger.error("Failed to parse request body: %s", exc)
-        return func.HttpResponse("OK", status_code=200)
+        events = req.get_json()
 
-    try:
-        if isinstance(body, dict):
-            events = [body]
-        else:
-            events = body
-
-        event_types = [e.get("type", e.get("eventType", "unknown")) for e in events]
+        # Log event type only — never log full payload (may contain call metadata)
+        event_types = [_event_type(e) for e in events]
         logger.info(
             "incoming_call: received %d event(s): %s",
-            len(events), event_types)
+            len(events),
+            event_types)
 
         for event in events:
-            event_type = event.get("type", event.get("eventType", ""))
+            event_type = _event_type(event)
 
-            # EventGrid validation — must respond synchronously
+            # EventGrid subscription validation handshake
             if event_type == "Microsoft.EventGrid.SubscriptionValidationEvent":
                 code = event["data"]["validationCode"]
                 logger.info("EventGrid validation handshake completed")
@@ -75,7 +85,7 @@ async def incoming_call(req: func.HttpRequest) -> func.HttpResponse:
 
     except Exception as exc:
         logger.exception("incoming_call unhandled error: %s", exc)
-        return func.HttpResponse("OK", status_code=200)
+        return func.HttpResponse("Internal error", status_code=500)
 
 
 # ── Route 2: Mid-call ACS callback events ────────────────────
@@ -91,31 +101,23 @@ async def acs_callback(req: func.HttpRequest) -> func.HttpResponse:
       CallDisconnected
     """
     try:
-        body = req.get_json()
+        events = req.get_json()
 
-        if isinstance(body, dict):
-            events = [body]
-        else:
-            events = body
-
-        event_types = [e.get("type", "unknown") for e in events]
+        event_types = [_event_type(e) for e in events]
         logger.info(
             "acs_callback: received %d event(s): %s",
-            len(events), event_types)
+            len(events),
+            event_types)
 
         handler = _get_handler()
         for event in events:
-            try:
-                await handler.handle_callback(event)
-            except Exception as exc:
-                logger.exception("handle_callback error for %s: %s",
-                                 event.get("type", "unknown"), exc)
+            await handler.handle_callback(event)
 
         return func.HttpResponse("OK", status_code=200)
 
     except Exception as exc:
         logger.exception("acs_callback unhandled error: %s", exc)
-        return func.HttpResponse("OK", status_code=200)
+        return func.HttpResponse("Internal error", status_code=500)
 
 
 # ── Route 3: Health check ─────────────────────────────────────
@@ -123,7 +125,9 @@ async def acs_callback(req: func.HttpRequest) -> func.HttpResponse:
 @app.route(route="health", methods=["GET"])
 async def health(req: func.HttpRequest) -> func.HttpResponse:
     """
-    Returns minimal status confirmation.
+    Returns minimal liveness confirmation plus company name.
+    Company name confirms App Configuration connectivity without
+    exposing secrets or sensitive config.
     """
     try:
         cfg = _get_handler().config
@@ -138,7 +142,7 @@ async def health(req: func.HttpRequest) -> func.HttpResponse:
     except Exception as exc:
         logger.error("Health check failed: %s", exc)
         return func.HttpResponse(
-            json.dumps({"status": "error", "detail": str(exc)}),
+            json.dumps({"status": "error"}),
             mimetype="application/json",
             status_code=500,
         )

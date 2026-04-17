@@ -166,7 +166,7 @@ jobs:
               "status":  "failure",
               "app":     "${{ secrets.FUNCTION_APP_NAME }}",
               "branch":  "${{ github.ref_name }}",
-              "commit":  "${{ secrets.FUNCTION_APP_NAME }}",
+              "commit":  "${{ github.sha }}",
               "actor":   "${{ github.actor }}",
               "message": "Virtual Receptionist deployment FAILED - check GitHub Actions logs"
             }' || true

@@ -7,10 +7,13 @@
       1. Create the resource account (New-CsOnlineApplicationInstance)
       2. Set the ACS Resource ID on it (Set-CsOnlineApplicationInstance)
       3. Sync provisioning (Sync-CsOnlineApplicationInstance)
-      4. Assign the phone number (Set-CsPhoneNumberAssignment)
+      4. Assign the Teams Phone Resource Account license
+      5. Assign the phone number (Set-CsPhoneNumberAssignment)
+      6. Verify final configuration
 
     IMPORTANT: This CANNOT be done via Teams Admin Center UI.
     Requires the Microsoft Teams PowerShell module and Global Admin rights.
+    Also requires the Microsoft.Graph.Users module for license assignment.
 
 .PARAMETER UPN
     UPN for the resource account. Example: reception@contoso.com
@@ -32,6 +35,10 @@
 .PARAMETER PhoneNumberType
     DirectRouting or CallingPlan. Default: DirectRouting
 
+.PARAMETER SkipLicenseAssignment
+    Skip the license assignment step. Use only if the license is already
+    assigned or you are assigning it separately via the M365 Admin Center.
+
 .EXAMPLE
     .\New-TeamsResourceAccount.ps1 `
         -UPN           "reception@contoso.com" `
@@ -48,30 +55,27 @@ param(
     [Parameter(Mandatory)] [string] $AppId,
     [Parameter(Mandatory)] [string] $AcsResourceId,
     [Parameter(Mandatory)] [string] $PhoneNumber,
-    [string] $PhoneNumberType = "DirectRouting"
+    [string] $PhoneNumberType = "DirectRouting",
+    [switch] $SkipLicenseAssignment
 )
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
 
-# ── Check Teams module ────────────────────────────────────────
 Write-Host "`n=== Teams Resource Account Setup ===" -ForegroundColor Cyan
 
 if (-not (Get-Module -ListAvailable -Name MicrosoftTeams)) {
     Write-Host "Installing MicrosoftTeams PowerShell module..." -ForegroundColor Yellow
     Install-Module MicrosoftTeams -Force -AllowClobber -Scope CurrentUser
 }
-
 Import-Module MicrosoftTeams
 
-# ── Connect ───────────────────────────────────────────────────
 Write-Host "Connecting to Microsoft Teams (Global Admin required)..." -ForegroundColor Yellow
 Connect-MicrosoftTeams
 
 # ── Step 1: Create resource account ──────────────────────────
-Write-Host "`n[1/5] Creating resource account '$UPN'..." -ForegroundColor Yellow
+Write-Host "`n[1/6] Creating resource account '$UPN'..." -ForegroundColor Yellow
 
-# Check if it already exists
 $Existing = Get-CsOnlineApplicationInstance -Identity $UPN -ErrorAction SilentlyContinue
 if ($Existing) {
     Write-Host "    Resource account already exists — updating." -ForegroundColor DarkYellow
@@ -84,10 +88,10 @@ if ($Existing) {
     }
 }
 
-Start-Sleep -Seconds 5   # Allow provisioning to settle
+Start-Sleep -Seconds 5
 
 # ── Step 2: Set ACS Resource ID ───────────────────────────────
-Write-Host "[2/5] Setting ACS Resource ID on resource account..." -ForegroundColor Yellow
+Write-Host "[2/6] Setting ACS Resource ID on resource account..." -ForegroundColor Yellow
 Write-Host "    ACS Resource ID: $AcsResourceId"
 
 if ($PSCmdlet.ShouldProcess($UPN, "Set-CsOnlineApplicationInstance -AcsResourceId")) {
@@ -100,11 +104,10 @@ if ($PSCmdlet.ShouldProcess($UPN, "Set-CsOnlineApplicationInstance -AcsResourceI
 Start-Sleep -Seconds 3
 
 # ── Step 3: Sync provisioning ─────────────────────────────────
-Write-Host "[3/5] Syncing provisioning..." -ForegroundColor Yellow
+Write-Host "[3/6] Syncing provisioning..." -ForegroundColor Yellow
 
 $Instance = Get-CsOnlineApplicationInstance -Identity $UPN
 $ObjectId  = $Instance.ObjectId
-
 Write-Host "    Object ID: $ObjectId"
 
 if ($PSCmdlet.ShouldProcess($ObjectId, "Sync-CsOnlineApplicationInstance")) {
@@ -113,10 +116,44 @@ if ($PSCmdlet.ShouldProcess($ObjectId, "Sync-CsOnlineApplicationInstance")) {
         -ApplicationId $AppId
 }
 
-Start-Sleep -Seconds 10  # Sync takes a few seconds
+Start-Sleep -Seconds 10
 
-# ── Step 4: Assign phone number ───────────────────────────────
-Write-Host "[4/5] Assigning phone number $PhoneNumber ($PhoneNumberType)..." -ForegroundColor Yellow
+# ── Step 4: Assign license ────────────────────────────────────
+if (-not $SkipLicenseAssignment) {
+    Write-Host "[4/6] Assigning Teams Phone Resource Account license..." -ForegroundColor Yellow
+
+    if (-not (Get-Module -ListAvailable -Name Microsoft.Graph.Users)) {
+        Write-Host "    Installing Microsoft.Graph.Users module..." -ForegroundColor Yellow
+        Install-Module Microsoft.Graph.Users -Force -AllowClobber -Scope CurrentUser
+    }
+    Import-Module Microsoft.Graph.Users
+    Connect-MgGraph -Scopes "User.ReadWrite.All", "Organization.Read.All" -NoWelcome
+
+    $LicenseSkuPartNumber = "PHONESYSTEM_VIRTUALUSER"
+    $OrgSkus   = Get-MgSubscribedSku -All
+    $TargetSku = $OrgSkus | Where-Object { $_.SkuPartNumber -eq $LicenseSkuPartNumber }
+
+    if (-not $TargetSku) {
+        Write-Warning "License SKU '$LicenseSkuPartNumber' not found in tenant."
+        Write-Warning "Assign manually: M365 Admin Center > Users > Active Users > $UPN > Licenses"
+    } else {
+        Write-Host "    License: $LicenseSkuPartNumber ($($TargetSku.ConsumedUnits) / $($TargetSku.PrepaidUnits.Enabled) used)" -ForegroundColor DarkGray
+        if ($PSCmdlet.ShouldProcess($UPN, "Set-MgUserLicense (assign $LicenseSkuPartNumber)")) {
+            Set-MgUserLicense `
+                -UserId         $UPN `
+                -AddLicenses    @{ SkuId = $TargetSku.SkuId } `
+                -RemoveLicenses @()
+            Write-Host "    License assigned successfully." -ForegroundColor Green
+        }
+        Start-Sleep -Seconds 10
+    }
+} else {
+    Write-Host "[4/6] License assignment skipped (-SkipLicenseAssignment)." -ForegroundColor DarkGray
+    Write-Host "    Ensure 'Microsoft Teams Phone Resource Account' license is assigned before assigning a phone number." -ForegroundColor Yellow
+}
+
+# ── Step 5: Assign phone number ───────────────────────────────
+Write-Host "[5/6] Assigning phone number $PhoneNumber ($PhoneNumberType)..." -ForegroundColor Yellow
 
 if ($PSCmdlet.ShouldProcess($UPN, "Set-CsPhoneNumberAssignment")) {
     Set-CsPhoneNumberAssignment `
@@ -125,20 +162,19 @@ if ($PSCmdlet.ShouldProcess($UPN, "Set-CsPhoneNumberAssignment")) {
         -PhoneNumberType $PhoneNumberType
 }
 
-# ── Step 5: Verify ────────────────────────────────────────────
-Write-Host "[5/5] Verifying configuration..." -ForegroundColor Yellow
+# ── Step 6: Verify ────────────────────────────────────────────
+Write-Host "[6/6] Verifying configuration..." -ForegroundColor Yellow
 Start-Sleep -Seconds 5
 
 $Final = Get-CsOnlineApplicationInstance -Identity $UPN
 
 Write-Host "`n=== Verification ===" -ForegroundColor Green
-Write-Host "UPN:           $($Final.UserPrincipalName)"
-Write-Host "Display Name:  $($Final.DisplayName)"
-Write-Host "Application ID:$($Final.ApplicationId)"
-Write-Host "ACS Resource:  $($Final.AcsResourceId)"
-Write-Host "Phone Number:  $($Final.PhoneNumber)"
+Write-Host "UPN:            $($Final.UserPrincipalName)"
+Write-Host "Display Name:   $($Final.DisplayName)"
+Write-Host "Application ID: $($Final.ApplicationId)"
+Write-Host "ACS Resource:   $($Final.AcsResourceId)"
+Write-Host "Phone Number:   $($Final.PhoneNumber)"
 
-# Validation checks
 $AllGood = $true
 
 if ($Final.ApplicationId -ne $AppId) {
@@ -158,6 +194,3 @@ if ($AllGood) {
     Write-Host "If AcsResourceId is blank, wait 5 minutes and run:"
     Write-Host "  Get-CsOnlineApplicationInstance -Identity '$UPN' | Format-List"
 }
-
-Write-Host "`nReminder: Assign the 'Microsoft Teams Phone Resource Account' (free) license" -ForegroundColor Yellow
-Write-Host "  Microsoft 365 Admin Center > Users > Active Users > $UPN > Licenses"
