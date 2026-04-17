@@ -7,6 +7,12 @@ runtime to discover the registered functions.
 
 All configuration is loaded from Azure App Configuration at runtime.
 Secrets are loaded from Azure Key Vault via Managed Identity.
+
+Note on event field names:
+  - EventGrid events use 'eventType' (e.g. SubscriptionValidationEvent,
+    IncomingCall delivered via EventGrid push)
+  - ACS callback events use 'type' (e.g. RecognizeCompleted, PlayCompleted)
+  Both are handled via _event_type() helper.
 """
 
 import json
@@ -32,6 +38,14 @@ def _get_handler() -> CallHandler:
     return _handler
 
 
+def _event_type(event: dict) -> str:
+    """
+    EventGrid uses 'eventType'; ACS callbacks use 'type'.
+    Check both so the same handler works for both sources.
+    """
+    return event.get("eventType") or event.get("type") or ""
+
+
 # ── Route 1: Incoming call webhook ───────────────────────────
 
 @app.route(route="incoming_call", methods=["POST"])
@@ -44,14 +58,14 @@ async def incoming_call(req: func.HttpRequest) -> func.HttpResponse:
         events = req.get_json()
 
         # Log event type only — never log full payload (may contain call metadata)
-        event_types = [e.get("type", "unknown") for e in events]
+        event_types = [_event_type(e) for e in events]
         logger.info(
             "incoming_call: received %d event(s): %s",
             len(events),
             event_types)
 
         for event in events:
-            event_type = event.get("type", "")
+            event_type = _event_type(event)
 
             # EventGrid subscription validation handshake
             if event_type == "Microsoft.EventGrid.SubscriptionValidationEvent":
@@ -89,7 +103,7 @@ async def acs_callback(req: func.HttpRequest) -> func.HttpResponse:
     try:
         events = req.get_json()
 
-        event_types = [e.get("type", "unknown") for e in events]
+        event_types = [_event_type(e) for e in events]
         logger.info(
             "acs_callback: received %d event(s): %s",
             len(events),
@@ -112,8 +126,8 @@ async def acs_callback(req: func.HttpRequest) -> func.HttpResponse:
 async def health(req: func.HttpRequest) -> func.HttpResponse:
     """
     Returns minimal liveness confirmation plus company name.
-    Company name is intentionally included — it confirms App Configuration
-    connectivity without exposing secrets or sensitive config.
+    Company name confirms App Configuration connectivity without
+    exposing secrets or sensitive config.
     """
     try:
         cfg = _get_handler().config
