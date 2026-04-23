@@ -33,8 +33,10 @@ Callers speak a staff member's name → Azure AI Speech transcribes it → phone
 │   └── appconfig-seed.json         # Initial App Configuration values (template)
 ├── alerts/
 │   └── alert-rules.json            # Alert rule definitions
-└── docs/
-    └── troubleshooting.md          # Troubleshooting guide
+├── docs/
+│   ├── troubleshooting.md          # Troubleshooting guide
+│   └── onboarding-runbook-v2.docx # Customer handover and operations checklist
+└── architecture-v2.html            # High-level solution architecture diagram
 ```
 
 ---
@@ -184,17 +186,16 @@ Takes effect within 5 minutes (Graph cache TTL).
 
 ## Known Limitations
 
-**Scale-out and pending transfers**
+**Durable pending transfer state depends on storage availability**
 
-`call_handler.py` uses a module-level dict (`_pending_transfers`) to track calls
-between the "Connecting you to..." audio prompt and the actual transfer. This works
-correctly when the Function App runs as a single instance. If the Consumption plan
-scales out, a PlayCompleted callback may arrive on a different instance than the one
-that queued the transfer, silently dropping it.
+Pending transfers are persisted in Azure Table Storage via `PendingTransferStore`
+(`bot/pending_transfer_store.py`) instead of in-memory state, which supports
+Function App scale-out scenarios.
 
-At receptionist call volumes (one concurrent call) this is not a practical issue.
-For higher-volume deployments, replace `_pending_transfers` with an Azure Table
-Storage row keyed on `callConnectionId`.
+If the Function App loses access to `AzureWebJobsStorage` (for example, storage
+outage or credential/configuration issue), transfer finalisation can fail because
+the pending transfer context cannot be loaded at `PlayCompleted` time.
+Keep storage connectivity and credentials monitored as part of operational runbooks.
 
 ---
 
@@ -226,9 +227,9 @@ Alerts fire to both email and a Teams channel (via Power Automate webhook) on:
 The GitHub Actions workflow (`deploy.yml`):
 - Triggers on push to `main` affecting `bot/**`, or manually via workflow_dispatch
 - Lints with flake8 before deploying
-- Deploys using `Azure/functions-action` with `scm-do-build-during-deployment: true`
-- Does **not** set `enable-oryx-build: true` — combining this with pre-resolved
-  `.python_packages/` causes deployment failures
-- Retrieves the function key via the **Kudu SCM API** (not `az functionapp keys list`,
-  which can fail if the Functions runtime hasn't fully initialised post-deploy)
+- Deploys using `Azure/functions-action` with `scm-do-build-during-deployment: false`
+- Sets `enable-oryx-build: false` because dependencies are pre-packaged into
+  `.python_packages/` during the workflow
+- Retrieves the function key via `az functionapp keys list` with retry logic to
+  handle post-deploy warm-up timing
 - Posts success/failure notifications to Teams via Power Automate webhook
